@@ -117,6 +117,7 @@ export const AdminSettings = () => {
               )}
               <Button
                 type="submit"
+                className="self-start"
                 disabled={updateAccount.isPending || mismatch}
               >
                 {updateAccount.isPending ? "保存中…" : "保存"}
