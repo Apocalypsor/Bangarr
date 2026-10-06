@@ -246,13 +246,21 @@ export abstract class JobsService {
   static page(context: Pick<AppContext, "database">, filter: JobsQuery = {}) {
     const page = listTaskPage(context.database, filter);
     const counts = {
+      waiting: 0,
+      retrying: 0,
       pending: 0,
       running: 0,
       succeeded: 0,
       failed: 0,
       cancelled: 0,
     };
-    for (const row of page.counts) counts[row.state] = row.count;
+    for (const row of page.counts) {
+      counts[row.state] = row.count;
+      if (row.state === "pending") {
+        counts.retrying = row.retrying;
+        counts.waiting = row.count - row.retrying;
+      }
+    }
 
     return {
       ...page,

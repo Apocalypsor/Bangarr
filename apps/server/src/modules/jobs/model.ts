@@ -3,6 +3,9 @@ import { t } from "elysia";
 export const jobsQuerySchema = t.Object({
   state: t.Optional(
     t.Union([
+      t.Literal("active"),
+      t.Literal("waiting"),
+      t.Literal("retrying"),
       t.Literal("pending"),
       t.Literal("running"),
       t.Literal("succeeded"),

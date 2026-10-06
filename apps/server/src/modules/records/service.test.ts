@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { records } from "@server/db/schema";
+import { accounts, records } from "@server/db/schema";
 import { JobsService } from "@server/modules/jobs/service";
 import { RecordsService } from "@server/modules/records/service";
 import { testContext } from "@server/utils/testing";
@@ -101,5 +101,75 @@ test("record retry uses the persisted original job without erasing historical ou
     expect(JobsService.get(queue, job.id)?.state).toBe("failed");
   } finally {
     ctx.dispose();
+  }
+});
+
+test("record details include account and task context without exposing credentials or job payloads", () => {
+  const context = testContext();
+
+  try {
+    context.database.orm
+      .insert(accounts)
+      .values({
+        id: "account",
+        username: "bangumi-user",
+        nickname: "昵称",
+        accessToken: context.vault.seal("private-token"),
+        plexUsers: ["plex"],
+        createdAt: 0,
+      })
+      .run();
+    const job = JobsService.enqueue(context, {
+      kind: "sync",
+      dedupeKey: "detail",
+      payload: {
+        action: "watched",
+        plexAccountName: "Home",
+        privateField: "never-return-this",
+      },
+    }).job;
+    context.database.orm
+      .insert(records)
+      .values({
+        id: "detail",
+        jobId: job.id,
+        accountId: "account",
+        title: "作品",
+        season: 1,
+        episode: 8,
+        mediaType: "episode",
+        plexUser: "plex-user",
+        source: "plex_poll",
+        status: "success",
+        subjectId: 10,
+        episodeId: 108,
+        message: "Bangumi 已有此进度",
+        trace: [{ step: "mapping", offset: -12, subjectId: 10 }],
+        createdAt: 100,
+      })
+      .run();
+
+    const detail = RecordsService.get(context, "detail");
+    expect(detail).toMatchObject({
+      accountName: "bangumi-user",
+      accountNickname: "昵称",
+      plexAccountName: "Home",
+      action: "watched",
+      matching: "manual",
+      episodeOffset: -12,
+      job: { state: "pending", attempt: 0, maxAttempts: 5 },
+      subjectId: 10,
+      episodeId: 108,
+    });
+    expect(JSON.stringify(detail)).not.toContain("private-token");
+    expect(JSON.stringify(detail)).not.toContain("accessToken");
+    expect(JSON.stringify(detail)).not.toContain("never-return-this");
+    context.database.orm.delete(accounts).run();
+    expect(RecordsService.get(context, "detail").accountName).toBeNull();
+    expect(RecordsService.get(context, "detail").message).toBe(
+      "Bangumi 已有此进度",
+    );
+  } finally {
+    context.dispose();
   }
 });

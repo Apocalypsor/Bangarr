@@ -598,6 +598,22 @@ test("task page validates filters and cancellation affects only pending tasks", 
   ).toBe(200);
   expect(JobsService.get(context, first.job.id)?.state).toBe("cancelled");
   JobsService.claim(context, "worker");
+  const active = await app.handle(
+    request("/jobs?state=active", "GET", undefined, cookie),
+  );
+  expect(active.status).toBe(200);
+  expect(await active.json()).toMatchObject({
+    total: 1,
+    items: [{ id: second.job.id, state: "running" }],
+    counts: { waiting: 0, running: 1, retrying: 0 },
+  });
+  for (const state of ["waiting", "retrying"]) {
+    const empty = await app.handle(
+      request(`/jobs?state=${state}`, "GET", undefined, cookie),
+    );
+    expect(empty.status).toBe(200);
+    expect(await empty.json()).toMatchObject({ total: 0, items: [] });
+  }
   expect(
     (
       await app.handle(

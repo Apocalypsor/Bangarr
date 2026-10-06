@@ -102,8 +102,8 @@ export const PlexSettings = () => {
     mutationFn: async ({ id, full }: { id: string; full: boolean }) =>
       unwrap(await api.api.plex.accounts({ id }).scan.post({ full })),
     onSuccess: () => {
-      void client.invalidateQueries({ queryKey: ["jobs"] });
       toast.success("已安排同步");
+      void client.invalidateQueries({ queryKey: ["jobs"] });
     },
     onError: (error) => toast.error(error.message),
   });

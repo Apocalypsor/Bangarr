@@ -3,11 +3,14 @@ import type { BangumiEpisode, BangumiSubject } from "@server/clients/bangumi";
 import { BangumiClient } from "@server/clients/bangumi";
 import type { PlexItem } from "@server/clients/plex";
 import { CatalogStore, createCatalog, insertSubject } from "@server/db/catalog";
+import { candidates, jobs } from "@server/db/schema";
+import { JobsService } from "@server/modules/jobs/service";
 import {
   MatchingService,
   NeedsConfirmation,
 } from "@server/modules/matching/service";
 import { defaultSettings } from "@server/modules/settings/model";
+import { SettingsService } from "@server/modules/settings/service";
 import { testContext } from "@server/utils/testing";
 
 interface Segment {
@@ -288,3 +291,148 @@ test("cycles terminate and cannot be used for cumulative season inference", asyn
   await expect(resolve(2, 3)).rejects.toBeInstanceOf(NeedsConfirmation);
   expect(calls.length).toBeLessThan(10);
 });
+
+test("confirmation groups episodes and accounts by exact title and season and retries the whole group", () => {
+  const context = testContext();
+  disposables.push(context.dispose);
+  const rows = [
+    { id: "a1", title: "同一作品", season: 1, episode: 1, accountId: "a" },
+    { id: "a2", title: "同一作品", season: 1, episode: 2, accountId: "a" },
+    { id: "b1", title: "同一作品", season: 1, episode: 1, accountId: "b" },
+    { id: "season2", title: "同一作品", season: 2, episode: 1, accountId: "a" },
+    { id: "other", title: "其他作品", season: 1, episode: 1, accountId: "a" },
+  ];
+
+  for (const row of rows) seedCandidate(context, row);
+
+  const groups = MatchingService.candidates(context);
+  const group = groups.find(
+    (row) => row.title === "同一作品" && row.season === 1,
+  );
+  expect(groups).toHaveLength(3);
+  expect(group?.taskCount).toBe(3);
+  expect(group?.choices.map((choice) => choice.id).sort()).toEqual([10, 11]);
+
+  MatchingService.resolve(context, "a1", 10, -1);
+
+  expect(MatchingService.candidates(context)).toHaveLength(2);
+  expect(MatchingService.mappings(context)).toMatchObject([
+    { title: "同一作品", season: 1, subjectId: 10, episodeOffset: -1 },
+  ]);
+  const queued = context.database.orm
+    .select()
+    .from(jobs)
+    .all()
+    .filter((job) => job.state === "pending");
+  expect(queued).toHaveLength(3);
+  for (const row of rows.slice(0, 3)) {
+    expect(queued.find((job) => job.dedupeKey === row.id)?.payload).toEqual(
+      JobsService.get(context, row.id)?.payload,
+    );
+  }
+  expect(() => MatchingService.resolve(context, "a2", 10)).toThrow(
+    "候选已处理",
+  );
+});
+
+test("blocking a work clears its pending confirmations across seasons without retrying unrelated work", () => {
+  const context = testContext();
+  disposables.push(context.dispose);
+  for (const [id, title, season] of [
+    ["a", "屏蔽作品", 1],
+    ["b", "屏蔽作品", 2],
+    ["c", "保留作品", 1],
+  ] as const) {
+    seedCandidate(context, { id, title, season, episode: 1, accountId: "a" });
+  }
+
+  MatchingService.resolve(context, "a", null);
+
+  expect(MatchingService.candidates(context).map((row) => row.title)).toEqual([
+    "保留作品",
+  ]);
+  expect(SettingsService.read(context).sync.blockedKeywords).toContain(
+    "屏蔽作品",
+  );
+  expect(
+    context.database.orm
+      .select()
+      .from(jobs)
+      .all()
+      .every((job) => job.state === "failed"),
+  ).toBe(true);
+});
+
+test("a missing related job rolls back the entire confirmation and mapping", () => {
+  const context = testContext();
+  disposables.push(context.dispose);
+  seedCandidate(context, {
+    id: "valid",
+    title: "作品",
+    season: 1,
+    episode: 1,
+    accountId: "a",
+  });
+  context.database.orm
+    .insert(candidates)
+    .values({
+      id: "missing",
+      jobId: "missing",
+      title: "作品",
+      season: 1,
+      choices: [],
+      state: "pending",
+      createdAt: 0,
+    })
+    .run();
+
+  expect(() => MatchingService.resolve(context, "valid", 10)).toThrow(
+    "无法重试",
+  );
+  expect(MatchingService.mappings(context)).toHaveLength(0);
+  expect(MatchingService.candidates(context)[0]?.taskCount).toBe(2);
+  expect(context.database.orm.select().from(jobs).all()).toHaveLength(1);
+});
+
+const seedCandidate = (
+  context: ReturnType<typeof testContext>,
+  row: {
+    id: string;
+    title: string;
+    season: number;
+    episode: number;
+    accountId: string;
+  },
+) => {
+  context.database.orm
+    .insert(jobs)
+    .values({
+      id: row.id,
+      kind: "sync",
+      dedupeKey: row.id,
+      payload: {
+        item: { title: row.title, season: row.season, episode: row.episode },
+        accountId: row.accountId,
+      },
+      state: "failed",
+      availableAt: 0,
+      createdAt: 0,
+      updatedAt: 0,
+    })
+    .run();
+  context.database.orm
+    .insert(candidates)
+    .values({
+      id: row.id,
+      jobId: row.id,
+      title: row.title,
+      season: row.season,
+      choices:
+        row.episode === 2
+          ? [{ id: 11, name: "候选二" }]
+          : [{ id: 10, name: "候选一" }],
+      state: "pending",
+      createdAt: row.episode,
+    })
+    .run();
+};

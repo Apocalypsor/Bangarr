@@ -319,7 +319,9 @@ test("ambiguous match writes nothing until confirmed mapping retries the origina
 
   MatchingService.resolve(settings, candidate.id, 10);
   await SyncService.runOne(runner);
+  await SyncService.runOne(runner);
   expect(
     writes.filter((write) => write.path.endsWith("/episodes/101")),
-  ).toHaveLength(1);
+  ).toHaveLength(2);
+  expect(MatchingService.candidates(settings)).toHaveLength(0);
 });

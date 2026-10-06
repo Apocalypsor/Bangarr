@@ -15,6 +15,8 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@page/components/ui/dialog";
@@ -43,13 +45,35 @@ import {
   useRecordsQuery,
 } from "@page/hooks/use-records-query";
 import { api, unwrap } from "@page/lib/api";
-import { useMutation } from "@tanstack/react-query";
+import { RecordDetails } from "@page/modules/records/record-details";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { toast } from "sonner";
 
+const recordStatusLabels: Record<string, string> = {
+  success: "成功",
+  error: "失败",
+  pending: "待确认",
+  ignored: "已忽略",
+};
+
+const recordStatusVariants = {
+  success: "success",
+  error: "destructive",
+  pending: "warning",
+  ignored: "secondary",
+} as const;
+
+const recordStatusVariant = (status: string) =>
+  recordStatusVariants[status as keyof typeof recordStatusVariants] ??
+  "secondary";
+
 export const RecordsPage = () => {
+  const client = useQueryClient();
   const [page, setPage] = useState(0);
   const [detail, setDetail] = useState<string | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [userName, setUserName] = useState("");
   const [from, setFrom] = useState("");
@@ -71,14 +95,17 @@ export const RecordsPage = () => {
     .filter(Boolean)
     .sort((a, b) => a.localeCompare(b));
 
-  const selectedQuery = useRecordQuery(detail);
+  const selectedQuery = useRecordQuery(detail, detailOpen);
 
   const selected = selectedQuery.data;
 
   const retry = useMutation({
     mutationFn: async (id: string) =>
       unwrap(await api.api.records({ id }).retry.post()),
-    onSuccess: () => toast.success("已安排重新同步"),
+    onSuccess: () => {
+      toast.success("已安排重新同步");
+      void client.invalidateQueries({ queryKey: ["jobs"] });
+    },
     onError: (error) => toast.error(error.message),
   });
 
@@ -271,15 +298,8 @@ export const RecordsPage = () => {
                       </TableCell>
                       <TableCell>{record.plexUser}</TableCell>
                       <TableCell>
-                        <Badge variant="secondary">
-                          {(
-                            {
-                              success: "成功",
-                              error: "失败",
-                              pending: "待确认",
-                              ignored: "已忽略",
-                            } as Record<string, string>
-                          )[record.status] ?? record.status}
+                        <Badge variant={recordStatusVariant(record.status)}>
+                          {recordStatusLabels[record.status] ?? record.status}
                         </Badge>
                       </TableCell>
                       <TableCell>
@@ -288,7 +308,10 @@ export const RecordsPage = () => {
                       <TableCell>
                         <Button
                           variant="ghost"
-                          onClick={() => setDetail(record.id)}
+                          onClick={() => {
+                            setDetail(record.id);
+                            setDetailOpen(true);
+                          }}
                         >
                           查看
                         </Button>
@@ -326,38 +349,52 @@ export const RecordsPage = () => {
         </Card>
       )}
 
-      <Dialog
-        open={Boolean(detail)}
-        onOpenChange={(open) => {
-          if (!open) setDetail(null);
-        }}
-      >
-        <DialogContent className="max-h-[85dvh] overflow-auto sm:max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>{selected?.title ?? "记录详情"}</DialogTitle>
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+        <DialogContent className="flex max-h-[85dvh] min-w-0 flex-col overflow-hidden sm:max-w-lg">
+          <DialogHeader className="shrink-0 gap-5 pr-8">
+            <DialogTitle className="break-words leading-snug">
+              {selected && (
+                <Badge
+                  variant={recordStatusVariant(selected.status)}
+                  className="mr-2 h-auto align-baseline text-[length:inherit] font-[inherit] leading-[inherit]"
+                >
+                  {recordStatusLabels[selected.status] ?? selected.status}
+                </Badge>
+              )}
+              {selected
+                ? `${selected.title}${selected.mediaType === "episode" ? ` S${selected.season}E${selected.episode}` : ""}`
+                : "记录详情"}
+            </DialogTitle>
+            {selected && (
+              <DialogDescription className="whitespace-pre-wrap break-words text-foreground">
+                {selected.message}
+              </DialogDescription>
+            )}
           </DialogHeader>
-          {selectedQuery.error && <ErrorState error={selectedQuery.error} />}
-          {selectedQuery.isPending && <LoadingState />}
-          <p className="text-sm">{selected?.message}</p>
+          <div className="min-h-0 min-w-0 overflow-y-auto overscroll-contain">
+            {selectedQuery.error && <ErrorState error={selectedQuery.error} />}
+            {selectedQuery.isPending && !selectedQuery.error && (
+              <p className="text-sm text-muted-foreground">加载中…</p>
+            )}
+            {selected && <RecordDetails record={selected} />}
+          </div>
           {selected && selected.status !== "success" && (
-            <Button
-              variant="outline"
-              disabled={retry.isPending}
-              onClick={() => retry.mutate(selected.id)}
-            >
-              重新同步
-            </Button>
+            <DialogFooter className="shrink-0">
+              {selected.status === "pending" ? (
+                <Button asChild>
+                  <Link to="/matching">去确认匹配</Link>
+                </Button>
+              ) : (
+                <Button
+                  variant="outline"
+                  disabled={retry.isPending}
+                  onClick={() => retry.mutate(selected.id)}
+                >
+                  重新同步
+                </Button>
+              )}
+            </DialogFooter>
           )}
-          {selected?.subjectId ? (
-            <a
-              href={`https://bgm.tv/subject/${selected.subjectId}`}
-              target="_blank"
-              rel="noreferrer"
-              className="text-primary underline"
-            >
-              打开 Bangumi 条目
-            </a>
-          ) : null}
         </DialogContent>
       </Dialog>
     </div>

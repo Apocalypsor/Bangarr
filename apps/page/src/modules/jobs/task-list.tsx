@@ -25,16 +25,19 @@ import {
 import { type JobFilters, useJobsQuery } from "@page/hooks/use-jobs-query";
 import { api, unwrap } from "@page/lib/api";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 const states = {
-  pending: "等待中",
+  waiting: "等待执行",
   running: "执行中",
-  succeeded: "已完成",
-  failed: "失败",
-  cancelled: "已取消",
+  retrying: "等待重试",
+} as const;
+
+const stateVariants = {
+  waiting: "warning",
+  running: "info",
+  retrying: "warning",
 } as const;
 
 const kinds: Record<string, string> = {
@@ -49,20 +52,17 @@ export const TaskList = () => {
   const jobs = useJobsQuery(filters, page);
   const client = useQueryClient();
 
-  const action = useMutation({
-    mutationFn: async ({
-      id,
-      action,
-    }: {
-      id: string;
-      action: "retry" | "cancel";
-    }) => {
-      if (action === "retry")
-        return unwrap(await api.api.jobs({ id }).retry.post());
-      return unwrap(await api.api.jobs({ id }).cancel.post());
-    },
-    onSuccess: (_, input) => {
-      toast.success(input.action === "retry" ? "已安排重试" : "已取消");
+  useEffect(() => {
+    if (!jobs.data || jobs.isPlaceholderData) return;
+    const lastPage = Math.max(0, Math.ceil(jobs.data.total / 30) - 1);
+    if (page > lastPage) setPage(lastPage);
+  }, [jobs.data, jobs.isPlaceholderData, page]);
+
+  const cancel = useMutation({
+    mutationFn: async (id: string) =>
+      unwrap(await api.api.jobs({ id }).cancel.post()),
+    onSuccess: () => {
+      toast.success("已取消");
       void client.invalidateQueries({ queryKey: ["jobs"] });
     },
     onError: (error) => toast.error(error.message),
@@ -72,7 +72,10 @@ export const TaskList = () => {
     <div className="flex flex-col gap-5">
       <div className="flex flex-wrap gap-2">
         {Object.entries(states).map(([state, label]) => (
-          <Badge key={state} variant="secondary">
+          <Badge
+            key={state}
+            variant={stateVariants[state as keyof typeof states]}
+          >
             {label} {jobs.data?.counts[state as keyof typeof states] ?? "—"}
           </Badge>
         ))}
@@ -153,9 +156,16 @@ export const TaskList = () => {
                   <TableBody>
                     {jobs.data.items.map((job) => {
                       const pendingAction =
-                        action.isPending && action.variables.id === job.id;
+                        cancel.isPending && cancel.variables === job.id;
                       const waitingRetry =
                         job.state === "pending" && job.attempt > 0;
+
+                      const state =
+                        job.state === "running"
+                          ? "running"
+                          : waitingRetry
+                            ? "retrying"
+                            : "waiting";
 
                       return (
                         <TableRow key={job.id}>
@@ -174,18 +184,8 @@ export const TaskList = () => {
                             )}
                           </TableCell>
                           <TableCell>
-                            <Badge
-                              variant={
-                                job.state === "failed" && !job.needsConfirmation
-                                  ? "destructive"
-                                  : "secondary"
-                              }
-                            >
-                              {job.needsConfirmation
-                                ? "待确认"
-                                : waitingRetry
-                                  ? "等待重试"
-                                  : states[job.state]}
+                            <Badge variant={stateVariants[state]}>
+                              {states[state]}
                             </Badge>
                           </TableCell>
                           <TableCell className="max-w-sm whitespace-normal">
@@ -213,33 +213,12 @@ export const TaskList = () => {
                             {new Date(job.updatedAt).toLocaleString()}
                           </TableCell>
                           <TableCell>
-                            {job.needsConfirmation ? (
-                              <Button size="sm" variant="outline" asChild>
-                                <Link to="/matching">确认匹配</Link>
-                              </Button>
-                            ) : job.state === "failed" ||
-                              job.state === "cancelled" ? (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                disabled={pendingAction}
-                                onClick={() =>
-                                  action.mutate({ id: job.id, action: "retry" })
-                                }
-                              >
-                                重试
-                              </Button>
-                            ) : job.state === "pending" ? (
+                            {job.state === "pending" ? (
                               <Button
                                 size="sm"
                                 variant="ghost"
                                 disabled={pendingAction}
-                                onClick={() =>
-                                  action.mutate({
-                                    id: job.id,
-                                    action: "cancel",
-                                  })
-                                }
+                                onClick={() => cancel.mutate(job.id)}
                               >
                                 取消
                               </Button>
@@ -251,7 +230,7 @@ export const TaskList = () => {
                   </TableBody>
                 </Table>
               ) : (
-                <EmptyState title="暂无任务" />
+                <EmptyState title="暂无待处理任务" />
               )}
               <div className="mt-4 flex items-center justify-end gap-3">
                 <Button

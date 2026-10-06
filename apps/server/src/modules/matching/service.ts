@@ -604,7 +604,31 @@ export abstract class MatchingService {
   }
 
   static candidates(context: AppContext) {
-    return listPendingCandidates(context.database);
+    const groups = new Map<
+      string,
+      ReturnType<typeof listPendingCandidates>[number] & { taskCount: number }
+    >();
+
+    for (const candidate of listPendingCandidates(context.database)) {
+      const key = JSON.stringify([candidate.title, candidate.season]);
+      const group = groups.get(key);
+
+      if (!group) {
+        groups.set(key, { ...candidate, taskCount: 1 });
+        continue;
+      }
+
+      group.taskCount++;
+      const choiceIds = new Set(group.choices.map((choice) => choice.id));
+      for (const choice of candidate.choices) {
+        if (!choiceIds.has(choice.id)) {
+          group.choices.push(choice);
+          choiceIds.add(choice.id);
+        }
+      }
+    }
+
+    return [...groups.values()];
   }
 
   static resolve(
@@ -621,6 +645,12 @@ export abstract class MatchingService {
         if (!candidate)
           throw new AppError(404, "CANDIDATE_MISSING", "候选已处理或不存在");
 
+        const related = listPendingCandidates(
+          context.database,
+          candidate.title,
+          subjectId ? candidate.season : undefined,
+        );
+
         if (subjectId) {
           MatchingService.save(context, {
             title: candidate.title,
@@ -629,21 +659,23 @@ export abstract class MatchingService {
             episodeOffset,
           });
 
-          const job = JobsService.get(context, candidate.jobId);
+          for (const jobId of new Set(related.map((row) => row.jobId))) {
+            const job = JobsService.get(context, jobId);
 
-          if (!job)
-            throw new AppError(
-              404,
-              "JOB_NOT_FOUND",
-              "无法重试此匹配，请重新扫描 Plex",
-            );
+            if (!job)
+              throw new AppError(
+                404,
+                "JOB_NOT_FOUND",
+                "无法重试此匹配，请重新扫描 Plex",
+              );
 
-          JobsService.enqueue(context, {
-            kind: job.kind,
-            dedupeKey: job.dedupeKey,
-            payload: job.payload,
-            maxAttempts: job.maxAttempts,
-          });
+            JobsService.enqueue(context, {
+              kind: job.kind,
+              dedupeKey: job.dedupeKey,
+              payload: job.payload,
+              maxAttempts: job.maxAttempts,
+            });
+          }
         } else {
           const settings = SettingsService.read(context);
 
@@ -653,9 +685,11 @@ export abstract class MatchingService {
           SettingsService.save(context, settings);
         }
 
-        updateCandidateState(context.database, id, {
-          state: subjectId ? "confirmed" : "rejected",
-        });
+        for (const row of related) {
+          updateCandidateState(context.database, row.id, {
+            state: subjectId ? "confirmed" : "rejected",
+          });
+        }
 
         return { ok: true };
       },

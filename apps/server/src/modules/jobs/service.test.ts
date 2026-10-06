@@ -224,3 +224,66 @@ test("task progress persists and expired workers cannot overwrite it", () => {
   JobsService.complete(queue, task.job.id, "second", { changed: true });
   expect(JobsService.page(queue).items[0]?.progress).toBe("观看进度已同步");
 });
+
+test("active task pages exclude finished history before pagination and separate waiting from retrying", () => {
+  const { queue, advance } = fixture();
+  const enqueue = (key: string) =>
+    JobsService.enqueue(queue, {
+      kind: "sync",
+      dedupeKey: key,
+      payload: {},
+    }).job;
+
+  for (let index = 0; index < 35; index++) {
+    const completed = enqueue(`history:${index}`);
+    JobsService.claim(queue, "worker");
+    JobsService.complete(queue, completed.id, "worker");
+    advance(1);
+  }
+
+  const failed = enqueue("failed");
+  JobsService.claim(queue, "worker");
+  JobsService.fail(queue, failed.id, "worker", "terminal failure", false);
+  const cancelled = enqueue("cancelled");
+  JobsService.cancel(queue, cancelled.id);
+  const retrying = enqueue("retrying");
+  JobsService.claim(queue, "worker");
+  JobsService.fail(queue, retrying.id, "worker", "temporary failure", true);
+  const running = enqueue("running");
+  expect(JobsService.claim(queue, "worker")?.id).toBe(running.id);
+  const waiting = enqueue("waiting");
+
+  const page = JobsService.page(queue, { state: "active", limit: 1 });
+  expect(page.total).toBe(3);
+  expect(page.items[0]?.id).toBe(running.id);
+  expect(page.counts).toMatchObject({ waiting: 1, running: 1, retrying: 1 });
+  const rest = JobsService.page(queue, {
+    state: "active",
+    offset: 1,
+    limit: 2,
+  });
+  expect(rest.items.map((job) => job.id).sort()).toEqual(
+    [retrying.id, waiting.id].sort(),
+  );
+  expect(
+    JobsService.page(queue, { state: "waiting" }).items.map((job) => job.id),
+  ).toEqual([waiting.id]);
+  expect(
+    JobsService.page(queue, { state: "retrying" }).items.map((job) => job.id),
+  ).toEqual([retrying.id]);
+  expect(
+    JobsService.page(queue, { state: "active", kind: "plex-scan" }).total,
+  ).toBe(0);
+
+  JobsService.complete(queue, running.id, "worker");
+  JobsService.cancel(queue, waiting.id);
+  JobsService.cancel(queue, retrying.id);
+  expect(JobsService.page(queue, { state: "active" }).total).toBe(0);
+  expect(JobsService.get(queue, running.id)?.state).toBe("succeeded");
+
+  const retry = JobsService.retry(queue, failed.id);
+  expect(
+    JobsService.page(queue, { state: "active" }).items.map((job) => job.id),
+  ).toEqual([retry.job.id]);
+  expect(JobsService.get(queue, failed.id)?.state).toBe("failed");
+});

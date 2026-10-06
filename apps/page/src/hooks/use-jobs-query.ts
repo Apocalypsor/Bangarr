@@ -4,7 +4,9 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 type JobsQuery = NonNullable<
   NonNullable<Parameters<typeof api.api.jobs.get>[0]>["query"]
 >;
-export type JobFilters = Pick<JobsQuery, "state" | "kind">;
+export type JobFilters = Pick<JobsQuery, "kind"> & {
+  state?: Extract<JobsQuery["state"], "waiting" | "running" | "retrying">;
+};
 
 export const useJobsQuery = (filters: JobFilters, page: number) =>
   useQuery({
@@ -12,7 +14,12 @@ export const useJobsQuery = (filters: JobFilters, page: number) =>
     queryFn: async () =>
       unwrap(
         await api.api.jobs.get({
-          query: { ...filters, offset: page * 30, limit: 30 },
+          query: {
+            ...filters,
+            state: filters.state ?? "active",
+            offset: page * 30,
+            limit: 30,
+          },
         }),
       ),
     refetchInterval: 2000,

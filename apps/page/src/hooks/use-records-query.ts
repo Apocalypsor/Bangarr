@@ -35,10 +35,10 @@ export const useRecordsQuery = ({ page, filters }: RecordsQueryOptions) =>
     placeholderData: (previous) => previous,
   });
 
-export const useRecordQuery = (detail: string | null) =>
+export const useRecordQuery = (detail: string | null, open = true) =>
   useQuery({
     queryKey: ["record-detail", detail],
-    enabled: Boolean(detail),
+    enabled: Boolean(detail) && open,
     refetchInterval: 2000,
     refetchOnWindowFocus: true,
     staleTime: 0,

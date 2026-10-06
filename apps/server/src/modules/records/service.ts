@@ -1,3 +1,4 @@
+import { getAccount } from "@server/db/accounts";
 import type { HistoryFilter } from "@server/db/records";
 import { getSyncRecord, listSyncRecords } from "@server/db/records";
 import { JobsService } from "@server/modules/jobs/service";
@@ -24,7 +25,35 @@ export abstract class RecordsService {
 
     if (!row) throw new AppError(404, "RECORD_NOT_FOUND", "记录不存在");
 
-    return row;
+    const account = row.accountId
+      ? getAccount(context.database, row.accountId)
+      : undefined;
+    const job = row.jobId ? JobsService.get(context, row.jobId) : undefined;
+    const mapping = row.trace.find((step) => step.step === "mapping");
+
+    return {
+      ...row,
+      accountName: account?.username ?? null,
+      accountNickname: account?.nickname ?? null,
+      plexAccountName:
+        typeof job?.payload.plexAccountName === "string"
+          ? job.payload.plexAccountName
+          : null,
+      action:
+        job?.payload.action === "watched" || job?.payload.action === "watching"
+          ? job.payload.action
+          : null,
+      matching: mapping ? "manual" : row.subjectId ? "automatic" : null,
+      episodeOffset:
+        typeof mapping?.offset === "number" ? mapping.offset : null,
+      job: job
+        ? {
+            state: job.state,
+            attempt: job.attempt,
+            maxAttempts: job.maxAttempts,
+          }
+        : null,
+    };
   }
 
   static retry(context: Pick<AppContext, "database" | "now">, id: string) {

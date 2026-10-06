@@ -160,7 +160,15 @@ export const listJobs = (
 
 export const listTaskPage = (database: AppDatabase, filter: JobsQuery) => {
   const where = and(
-    filter.state ? eq(jobs.state, filter.state) : undefined,
+    filter.state === "active"
+      ? inArray(jobs.state, ["pending", "running"])
+      : filter.state === "waiting"
+        ? and(eq(jobs.state, "pending"), eq(jobs.attempt, 0))
+        : filter.state === "retrying"
+          ? and(eq(jobs.state, "pending"), gt(jobs.attempt, 0))
+          : filter.state
+            ? eq(jobs.state, filter.state)
+            : undefined,
     filter.kind ? eq(jobs.kind, filter.kind) : undefined,
   );
   const limit = filter.limit ?? 30;
@@ -236,7 +244,11 @@ export const listTaskPage = (database: AppDatabase, filter: JobsQuery) => {
           .where(where)
           .get()?.count ?? 0,
       counts: database.orm
-        .select({ state: jobs.state, count: sql<number>`count(*)` })
+        .select({
+          state: jobs.state,
+          count: sql<number>`count(*)`,
+          retrying: sql<number>`sum(case when ${jobs.attempt} > 0 then 1 else 0 end)`,
+        })
         .from(jobs)
         .groupBy(jobs.state)
         .all(),

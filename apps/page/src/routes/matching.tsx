@@ -10,6 +10,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@page/components/ui/dialog";
@@ -45,6 +46,10 @@ import { Plus } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
+type Candidate = NonNullable<
+  ReturnType<typeof useCandidatesQuery>["data"]
+>[number];
+
 export const MatchingPage = () => {
   const [confirmation, setConfirmation] = useState<{
     id: string;
@@ -59,7 +64,8 @@ export const MatchingPage = () => {
   const candidates = useCandidatesQuery();
 
   const [open, setOpen] = useState(false);
-  const [candidateId, setCandidateId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Candidate | null>(null);
+  const candidateId = selected?.id ?? null;
   const [mappingId, setMappingId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [season, setSeason] = useState(1);
@@ -68,6 +74,7 @@ export const MatchingPage = () => {
   const [resolveSeries, setResolveSeries] = useState(false);
 
   const refresh = () => {
+    void client.invalidateQueries({ queryKey: ["jobs"] });
     void client.invalidateQueries({ queryKey: ["mappings"] });
     void client.invalidateQueries({ queryKey: ["candidates"] });
   };
@@ -121,10 +128,8 @@ export const MatchingPage = () => {
     onError: (error) => toast.error(error.message),
   });
 
-  const selected = candidates.data?.find((row) => row.id === candidateId);
-
   const add = () => {
-    setCandidateId(null);
+    setSelected(null);
     setMappingId(null);
     setTitle("");
     setSeason(1);
@@ -190,6 +195,7 @@ export const MatchingPage = () => {
                         <TableHead>作品</TableHead>
                         <TableHead>季度</TableHead>
                         <TableHead>候选</TableHead>
+                        <TableHead>待处理任务</TableHead>
                         <TableHead>操作</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -200,11 +206,12 @@ export const MatchingPage = () => {
                           <TableCell>{candidate.title}</TableCell>
                           <TableCell>{candidate.season}</TableCell>
                           <TableCell>{candidate.choices.length}</TableCell>
+                          <TableCell>{candidate.taskCount}</TableCell>
                           <TableCell className="flex gap-2">
                             <Button
                               variant="outline"
                               onClick={() => {
-                                setCandidateId(candidate.id);
+                                setSelected(candidate);
                                 setMappingId(null);
                                 setTitle(candidate.title);
                                 setSeason(candidate.season);
@@ -291,7 +298,7 @@ export const MatchingPage = () => {
                             <Button
                               variant="outline"
                               onClick={() => {
-                                setCandidateId(null);
+                                setSelected(null);
                                 setMappingId(mapping.id);
                                 setTitle(mapping.title);
                                 setSeason(mapping.season);
@@ -336,63 +343,86 @@ export const MatchingPage = () => {
           if (!save.isPending) setOpen(value);
         }}
       >
-        <DialogContent className="max-h-[85dvh] overflow-auto">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[85dvh] min-w-0 flex-col overflow-hidden sm:max-w-xl">
+          <DialogHeader className="shrink-0 pr-8">
             <DialogTitle>
               {candidateId ? "确认匹配结果" : "设置映射"}
             </DialogTitle>
           </DialogHeader>
-          {selected ? (
-            <div className="flex flex-col gap-2">
-              {selected.choices.map((choice) => (
-                <Button
-                  key={String(choice.id)}
-                  variant="outline"
-                  className="justify-start"
-                  disabled={save.isPending}
-                  onClick={() => setSubjectId(String(choice.id))}
-                >
-                  {String(choice.nameCn || choice.name)} · {String(choice.id)}
-                </Button>
-              ))}
-            </div>
-          ) : null}
-
           <form
+            className="flex min-h-0 min-w-0 flex-col gap-4"
             onSubmit={(event) => {
               event.preventDefault();
               save.mutate();
             }}
           >
-            <fieldset disabled={save.isPending} className="min-w-0">
+            <fieldset
+              disabled={save.isPending}
+              className="flex min-h-0 min-w-0 flex-col gap-5 overflow-y-auto overscroll-contain px-1 pb-1"
+            >
+              {selected && (
+                <div className="flex min-w-0 flex-col gap-3">
+                  <p className="break-words font-medium">
+                    {title} · 第 {season} 季
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    确认后将重新同步此季度的 {selected.taskCount} 个任务。
+                  </p>
+                  {selected.choices.map((choice) => (
+                    <Button
+                      key={String(choice.id)}
+                      type="button"
+                      variant={
+                        subjectId === String(choice.id)
+                          ? "secondary"
+                          : "outline"
+                      }
+                      aria-pressed={subjectId === String(choice.id)}
+                      className="h-auto min-h-10 w-full min-w-0 justify-start whitespace-normal py-2 text-left"
+                      onClick={() => setSubjectId(String(choice.id))}
+                    >
+                      <span className="min-w-0 break-words [overflow-wrap:anywhere]">
+                        {String(choice.nameCn || choice.name)} ·{" "}
+                        {String(choice.id)}
+                      </span>
+                    </Button>
+                  ))}
+                </div>
+              )}
               <FieldGroup>
-                <Field>
-                  <FieldLabel htmlFor="mapping-title">Plex 作品标题</FieldLabel>
-                  <Input
-                    id="mapping-title"
-                    required
-                    value={title}
-                    disabled={Boolean(candidateId)}
-                    onChange={(event) => setTitle(event.target.value)}
-                  />
-                </Field>
-
-                <Field>
-                  <FieldLabel htmlFor="mapping-season">季度</FieldLabel>
-                  <Input
-                    id="mapping-season"
-                    type="number"
-                    min={-1}
-                    max={100}
-                    value={season}
-                    disabled={Boolean(candidateId)}
-                    onChange={(event) => setSeason(Number(event.target.value))}
-                  />
-                  <FieldDescription>-1 为全部季度，0 为特别篇</FieldDescription>
-                </Field>
-
                 {!candidateId && (
                   <>
+                    <Field>
+                      <FieldLabel htmlFor="mapping-title">
+                        Plex 作品标题
+                      </FieldLabel>
+                      <Input
+                        id="mapping-title"
+                        required
+                        value={title}
+                        disabled={Boolean(candidateId)}
+                        onChange={(event) => setTitle(event.target.value)}
+                      />
+                    </Field>
+
+                    <Field>
+                      <FieldLabel htmlFor="mapping-season">季度</FieldLabel>
+                      <Input
+                        id="mapping-season"
+                        type="number"
+                        min={-1}
+                        max={100}
+                        value={season}
+                        disabled={Boolean(candidateId)}
+                        onChange={(event) =>
+                          setSeason(Number(event.target.value))
+                        }
+                      />
+                      <FieldDescription>
+                        -1 为全部季度，0 为特别篇
+                      </FieldDescription>
+                    </Field>
+
                     <Field orientation="horizontal">
                       <FieldLabel htmlFor="mapping-series">
                         自动识别季度
@@ -438,12 +468,25 @@ export const MatchingPage = () => {
                     例如 Plex 第 13 集对应 Bangumi 第 1 集，填写 -12
                   </FieldDescription>
                 </Field>
-
-                <Button type="submit" disabled={save.isPending}>
-                  {save.isPending ? "保存中…" : "保存"}
-                </Button>
               </FieldGroup>
             </fieldset>
+            <DialogFooter className="shrink-0">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={save.isPending}
+                onClick={() => setOpen(false)}
+              >
+                取消
+              </Button>
+              <Button type="submit" disabled={save.isPending}>
+                {save.isPending
+                  ? "保存中…"
+                  : candidateId
+                    ? "确认并同步"
+                    : "保存"}
+              </Button>
+            </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>

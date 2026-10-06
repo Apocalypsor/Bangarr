@@ -49,12 +49,22 @@ export const upsertMapping = (
 export const deleteMapping = (database: AppDatabase, id: string) =>
   database.orm.delete(mappings).where(eq(mappings.id, id)).run();
 
-export const listPendingCandidates = (database: AppDatabase) =>
+export const listPendingCandidates = (
+  database: AppDatabase,
+  title?: string,
+  season?: number,
+) =>
   database.orm
     .select()
     .from(candidates)
-    .where(eq(candidates.state, "pending"))
-    .orderBy(desc(candidates.createdAt))
+    .where(
+      and(
+        eq(candidates.state, "pending"),
+        title === undefined ? undefined : eq(candidates.title, title),
+        season === undefined ? undefined : eq(candidates.season, season),
+      ),
+    )
+    .orderBy(desc(candidates.createdAt), desc(candidates.id))
     .all();
 
 export const getPendingCandidate = (database: AppDatabase, id: string) =>
