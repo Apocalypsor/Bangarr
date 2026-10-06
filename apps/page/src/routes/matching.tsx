@@ -4,6 +4,7 @@ import { Button } from "@page/components/ui/button";
 import {
   Card,
   CardContent,
+  CardDescription,
   CardHeader,
   CardTitle,
 } from "@page/components/ui/card";
@@ -41,6 +42,7 @@ import {
   useMappingsQuery,
 } from "@page/hooks/use-matching-queries";
 import { api, unwrap } from "@page/lib/api";
+import { candidateEpisodes } from "@page/modules/matching/utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import { useState } from "react";
@@ -194,6 +196,7 @@ export const MatchingPage = () => {
                       <TableRow>
                         <TableHead>作品</TableHead>
                         <TableHead>季度</TableHead>
+                        <TableHead>待匹配集数</TableHead>
                         <TableHead>候选</TableHead>
                         <TableHead>待处理任务</TableHead>
                         <TableHead>操作</TableHead>
@@ -204,7 +207,14 @@ export const MatchingPage = () => {
                       {candidates.data.map((candidate) => (
                         <TableRow key={candidate.id}>
                           <TableCell>{candidate.title}</TableCell>
-                          <TableCell>{candidate.season}</TableCell>
+                          <TableCell>
+                            {candidate.season === 0
+                              ? "特别篇"
+                              : `第 ${candidate.season} 季`}
+                          </TableCell>
+                          <TableCell className="max-w-xs whitespace-normal break-words">
+                            {candidateEpisodes(candidate)}
+                          </TableCell>
                           <TableCell>{candidate.choices.length}</TableCell>
                           <TableCell>{candidate.taskCount}</TableCell>
                           <TableCell className="flex gap-2">
@@ -343,14 +353,15 @@ export const MatchingPage = () => {
           if (!save.isPending) setOpen(value);
         }}
       >
-        <DialogContent className="flex max-h-[85dvh] min-w-0 flex-col overflow-hidden sm:max-w-xl">
-          <DialogHeader className="shrink-0 pr-8">
+        <DialogContent className="max-h-[85dvh] min-w-0 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden sm:max-w-xl">
+          <DialogHeader className="pr-8">
             <DialogTitle>
               {candidateId ? "确认匹配结果" : "设置映射"}
             </DialogTitle>
           </DialogHeader>
           <form
-            className="flex min-h-0 min-w-0 flex-col gap-4"
+            id="matching-form"
+            className="min-h-0 min-w-0 overflow-y-auto overscroll-contain px-1 pb-1"
             onSubmit={(event) => {
               event.preventDefault();
               save.mutate();
@@ -358,35 +369,108 @@ export const MatchingPage = () => {
           >
             <fieldset
               disabled={save.isPending}
-              className="flex min-h-0 min-w-0 flex-col gap-5 overflow-y-auto overscroll-contain px-1 pb-1"
+              className="flex min-w-0 flex-col gap-5"
             >
               {selected && (
                 <div className="flex min-w-0 flex-col gap-3">
                   <p className="break-words font-medium">
-                    {title} · 第 {season} 季
+                    {title} · {season === 0 ? "特别篇" : `第 ${season} 季`}
                   </p>
+                  <p className="break-words font-medium">
+                    待匹配：{candidateEpisodes(selected)}
+                  </p>
+                  <details className="text-sm">
+                    <summary className="cursor-pointer text-muted-foreground">
+                      查看各集与账号（{selected.taskCount} 个任务）
+                    </summary>
+                    <Table className="mt-2">
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>集数</TableHead>
+                          <TableHead>Plex 账号 / 用户</TableHead>
+                          <TableHead>Bangumi 账号</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {selected.tasks.map((task) => (
+                          <TableRow key={task.jobId}>
+                            <TableCell>
+                              {task.mediaType === "movie"
+                                ? "电影"
+                                : task.episode === null
+                                  ? "集数未知"
+                                  : `S${season}E${task.episode}`}
+                            </TableCell>
+                            <TableCell className="whitespace-normal break-words">
+                              {[task.plexAccountName, task.plexUser]
+                                .filter(Boolean)
+                                .join(" / ") || "未记录"}
+                            </TableCell>
+                            <TableCell className="whitespace-normal break-words">
+                              {task.accountName ?? "账号已删除或不可用"}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </details>
                   <p className="text-sm text-muted-foreground">
                     确认后将重新同步此季度的 {selected.taskCount} 个任务。
                   </p>
-                  {selected.choices.map((choice) => (
-                    <Button
-                      key={String(choice.id)}
-                      type="button"
-                      variant={
-                        subjectId === String(choice.id)
-                          ? "secondary"
-                          : "outline"
-                      }
-                      aria-pressed={subjectId === String(choice.id)}
-                      className="h-auto min-h-10 w-full min-w-0 justify-start whitespace-normal py-2 text-left"
-                      onClick={() => setSubjectId(String(choice.id))}
-                    >
-                      <span className="min-w-0 break-words [overflow-wrap:anywhere]">
-                        {String(choice.nameCn || choice.name)} ·{" "}
-                        {String(choice.id)}
-                      </span>
-                    </Button>
-                  ))}
+                  {selected.choices.map((choice) => {
+                    const chosen = subjectId === String(choice.id);
+                    const name = String(
+                      choice.nameCn || choice.name || "未命名条目",
+                    );
+
+                    return (
+                      <Card
+                        key={String(choice.id)}
+                        size="sm"
+                        className={chosen ? "min-w-0 ring-primary" : "min-w-0"}
+                      >
+                        <CardHeader className="min-w-0">
+                          <CardTitle className="break-words [overflow-wrap:anywhere]">
+                            {name}
+                          </CardTitle>
+                          {typeof choice.name === "string" &&
+                            choice.name !== name && (
+                              <CardDescription className="break-words [overflow-wrap:anywhere]">
+                                {choice.name}
+                              </CardDescription>
+                            )}
+                        </CardHeader>
+                        <CardContent className="flex flex-col gap-3">
+                          <p className="text-sm text-muted-foreground">
+                            放送日期：
+                            {typeof choice.date === "string" && choice.date
+                              ? choice.date
+                              : "暂无"}{" "}
+                            · ID {String(choice.id)}
+                          </p>
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <a
+                              href={`https://bgm.tv/subject/${Number(choice.id)}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-sm text-primary underline underline-offset-4"
+                              aria-label={`在 Bangumi 查看${name}`}
+                            >
+                              在 Bangumi 查看
+                            </a>
+                            <Button
+                              type="button"
+                              variant={chosen ? "default" : "outline"}
+                              aria-pressed={chosen}
+                              onClick={() => setSubjectId(String(choice.id))}
+                            >
+                              {chosen ? "已选择" : "选择此条目"}
+                            </Button>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
                 </div>
               )}
               <FieldGroup>
@@ -470,24 +554,24 @@ export const MatchingPage = () => {
                 </Field>
               </FieldGroup>
             </fieldset>
-            <DialogFooter className="shrink-0">
-              <Button
-                type="button"
-                variant="outline"
-                disabled={save.isPending}
-                onClick={() => setOpen(false)}
-              >
-                取消
-              </Button>
-              <Button type="submit" disabled={save.isPending}>
-                {save.isPending
-                  ? "保存中…"
-                  : candidateId
-                    ? "确认并同步"
-                    : "保存"}
-              </Button>
-            </DialogFooter>
           </form>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={save.isPending}
+              onClick={() => setOpen(false)}
+            >
+              取消
+            </Button>
+            <Button
+              type="submit"
+              form="matching-form"
+              disabled={save.isPending}
+            >
+              {save.isPending ? "保存中…" : candidateId ? "确认并同步" : "保存"}
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

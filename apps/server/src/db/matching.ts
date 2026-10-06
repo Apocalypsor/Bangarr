@@ -1,6 +1,6 @@
 import type { AppDatabase } from "@server/db/client";
-import { candidates, mappings } from "@server/db/schema";
-import { and, asc, desc, eq, or } from "drizzle-orm";
+import { accounts, candidates, jobs, mappings } from "@server/db/schema";
+import { and, asc, desc, eq, or, sql } from "drizzle-orm";
 
 export const listMappings = (database: AppDatabase) =>
   database.orm.select().from(mappings).orderBy(desc(mappings.createdAt)).all();
@@ -73,6 +73,32 @@ export const getPendingCandidate = (database: AppDatabase, id: string) =>
     .from(candidates)
     .where(and(eq(candidates.id, id), eq(candidates.state, "pending")))
     .get();
+
+export const listPendingCandidateDetails = (database: AppDatabase) =>
+  database.orm
+    .select({
+      candidate: candidates,
+      episode: sql<
+        number | null
+      >`json_extract(${jobs.payload}, '$.item.episode')`,
+      mediaType: sql<
+        string | null
+      >`json_extract(${jobs.payload}, '$.item.mediaType')`,
+      plexUser: sql<string | null>`json_extract(${jobs.payload}, '$.userName')`,
+      plexAccountName: sql<
+        string | null
+      >`json_extract(${jobs.payload}, '$.plexAccountName')`,
+      accountName: accounts.username,
+    })
+    .from(candidates)
+    .leftJoin(jobs, eq(jobs.id, candidates.jobId))
+    .leftJoin(
+      accounts,
+      eq(accounts.id, sql`json_extract(${jobs.payload}, '$.accountId')`),
+    )
+    .where(eq(candidates.state, "pending"))
+    .orderBy(desc(candidates.createdAt), desc(candidates.id))
+    .all();
 
 export const updateCandidateState = (
   database: AppDatabase,

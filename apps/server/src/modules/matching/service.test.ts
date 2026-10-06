@@ -3,7 +3,7 @@ import type { BangumiEpisode, BangumiSubject } from "@server/clients/bangumi";
 import { BangumiClient } from "@server/clients/bangumi";
 import type { PlexItem } from "@server/clients/plex";
 import { CatalogStore, createCatalog, insertSubject } from "@server/db/catalog";
-import { candidates, jobs } from "@server/db/schema";
+import { accounts, candidates, jobs } from "@server/db/schema";
 import { JobsService } from "@server/modules/jobs/service";
 import {
   MatchingService,
@@ -295,6 +295,25 @@ test("cycles terminate and cannot be used for cumulative season inference", asyn
 test("confirmation groups episodes and accounts by exact title and season and retries the whole group", () => {
   const context = testContext();
   disposables.push(context.dispose);
+  context.database.orm
+    .insert(accounts)
+    .values([
+      {
+        id: "a",
+        username: "first",
+        accessToken: "private-first",
+        plexUsers: [],
+        createdAt: 0,
+      },
+      {
+        id: "b",
+        username: "second",
+        accessToken: "private-second",
+        plexUsers: [],
+        createdAt: 0,
+      },
+    ])
+    .run();
   const rows = [
     { id: "a1", title: "同一作品", season: 1, episode: 1, accountId: "a" },
     { id: "a2", title: "同一作品", season: 1, episode: 2, accountId: "a" },
@@ -311,6 +330,35 @@ test("confirmation groups episodes and accounts by exact title and season and re
   );
   expect(groups).toHaveLength(3);
   expect(group?.taskCount).toBe(3);
+  expect(group?.tasks).toEqual([
+    {
+      jobId: "a1",
+      episode: 1,
+      mediaType: "episode",
+      plexUser: "plex-user",
+      plexAccountName: "Home",
+      accountName: "first",
+    },
+    {
+      jobId: "b1",
+      episode: 1,
+      mediaType: "episode",
+      plexUser: "plex-user",
+      plexAccountName: "Home",
+      accountName: "second",
+    },
+    {
+      jobId: "a2",
+      episode: 2,
+      mediaType: "episode",
+      plexUser: "plex-user",
+      plexAccountName: "Home",
+      accountName: "first",
+    },
+  ]);
+  expect(JSON.stringify(groups)).not.toContain("private-first");
+  expect(JSON.stringify(groups)).not.toContain("private-second");
+  expect(JSON.stringify(groups)).not.toContain("private-payload");
   expect(group?.choices.map((choice) => choice.id).sort()).toEqual([10, 11]);
 
   MatchingService.resolve(context, "a1", 10, -1);
@@ -391,6 +439,11 @@ test("a missing related job rolls back the entire confirmation and mapping", () 
   );
   expect(MatchingService.mappings(context)).toHaveLength(0);
   expect(MatchingService.candidates(context)[0]?.taskCount).toBe(2);
+  expect(
+    MatchingService.candidates(context)[0]?.tasks.find(
+      (task) => task.jobId === "missing",
+    ),
+  ).toMatchObject({ episode: null, accountName: null });
   expect(context.database.orm.select().from(jobs).all()).toHaveLength(1);
 });
 
@@ -411,8 +464,16 @@ const seedCandidate = (
       kind: "sync",
       dedupeKey: row.id,
       payload: {
-        item: { title: row.title, season: row.season, episode: row.episode },
+        item: {
+          title: row.title,
+          season: row.season,
+          episode: row.episode,
+          mediaType: "episode",
+        },
         accountId: row.accountId,
+        userName: "plex-user",
+        plexAccountName: "Home",
+        secret: "private-payload",
       },
       state: "failed",
       availableAt: 0,
@@ -436,3 +497,103 @@ const seedCandidate = (
     })
     .run();
 };
+
+test("a manually confirmed subject overrides conflicting dates and stays pinned to its episode numbering", async () => {
+  const context = testContext();
+  disposables.push(context.dispose);
+  const calls: string[] = [];
+  const api = new BangumiClient("https://bangumi.test", "", async (request) => {
+    expect(request.method).toBe("GET");
+    const url = new URL(request.url);
+    calls.push(url.pathname);
+    if (url.pathname === "/v0/episodes") {
+      expect(url.searchParams.get("subject_id")).toBe("443831");
+      return Response.json({
+        data: [
+          {
+            id: 1427231,
+            subject_id: 443831,
+            sort: 1,
+            ep: 1,
+            type: 0,
+            airdate: "2026-01-03",
+            name: "英灵事件",
+            name_cn: "英灵事件",
+          },
+        ],
+        total: 1,
+      });
+    }
+    if (url.pathname === "/v0/subjects/443831")
+      return Response.json({
+        id: 443831,
+        name: "Fate/strange Fake",
+        name_cn: "",
+        type: 2,
+        platform: "TV",
+      });
+    if (url.pathname === "/v0/subjects/443831/subjects")
+      return Response.json([]);
+    throw new Error(`Unexpected request: ${url.pathname}`);
+  });
+  const item: PlexItem = {
+    ratingKey: "fate-1",
+    title: "命运／奇异赝品",
+    originalTitle: "",
+    season: 1,
+    episode: 1,
+    mediaType: "episode",
+    releaseDate: "2024-12-31",
+    viewCount: 1,
+    lastViewedAt: null,
+  };
+
+  // Automatic matching must still reject contradictory episode metadata.
+  await expect(
+    MatchingService.resolveEpisode(context, item, api, 443831, true, []),
+  ).rejects.toBeInstanceOf(NeedsConfirmation);
+  MatchingService.save(context, {
+    title: item.title,
+    season: 1,
+    subjectId: 443831,
+    episodeOffset: 0,
+  });
+  calls.length = 0;
+  const result = await MatchingService.match(
+    context,
+    item,
+    api,
+    structuredClone(defaultSettings),
+  );
+  expect(result).toMatchObject({
+    subjectId: 443831,
+    episodeId: 1427231,
+    mapped: true,
+  });
+  expect(calls).toEqual(["/v0/episodes"]);
+
+  await expect(
+    MatchingService.match(
+      context,
+      { ...item, episode: 2 },
+      api,
+      structuredClone(defaultSettings),
+    ),
+  ).rejects.toMatchObject({ code: "MAPPED_EPISODE_MISSING" });
+  expect(calls.every((path) => path === "/v0/episodes")).toBe(true);
+
+  MatchingService.save(context, {
+    title: item.title,
+    season: 6,
+    subjectId: 443831,
+    episodeOffset: -12,
+  });
+  expect(
+    await MatchingService.match(
+      context,
+      { ...item, season: 6, episode: 13 },
+      api,
+      structuredClone(defaultSettings),
+    ),
+  ).toMatchObject({ subjectId: 443831, episodeId: 1427231, mapped: true });
+});

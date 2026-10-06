@@ -9,6 +9,7 @@ import {
   getMapping,
   getPendingCandidate,
   listMappings,
+  listPendingCandidateDetails,
   listPendingCandidates,
   updateCandidateState,
   updateMapping,
@@ -31,6 +32,7 @@ import type { EpisodeSegment } from "@server/modules/matching/utils/episodes";
 import {
   dateDistance,
   findCumulativeEpisode,
+  findLocalEpisode,
   findMergedSeasonEpisode,
   groupSeasonSegments,
   orderSegments,
@@ -44,6 +46,14 @@ import type { Settings } from "@server/modules/settings/model";
 import { SettingsService } from "@server/modules/settings/service";
 import type { AppContext } from "@server/types";
 import { AppError } from "@server/utils/errors";
+
+type PendingCandidateDetail = ReturnType<
+  typeof listPendingCandidateDetails
+>[number];
+type CandidateGroup = PendingCandidateDetail["candidate"] & {
+  taskCount: number;
+  tasks: (Omit<PendingCandidateDetail, "candidate"> & { jobId: string })[];
+};
 
 export class NeedsConfirmation extends AppError {
   constructor(
@@ -98,6 +108,7 @@ export abstract class MatchingService {
         mapping.subjectId,
         !mapping.resolveSeries,
         trace,
+        !mapping.resolveSeries,
       );
 
       return { ...episode, trace, mapped: true };
@@ -312,6 +323,7 @@ export abstract class MatchingService {
     subjectId: number,
     seasonMatched: boolean,
     trace: Record<string, unknown>[],
+    pinnedSubject = false,
   ): Promise<{
     subjectId: number;
     episodeId: number;
@@ -325,12 +337,38 @@ export abstract class MatchingService {
     if (item.mediaType === "movie") {
       const episode = [...episodes].sort((a, b) => a.sort - b.sort)[0];
 
+      if (!episode && pinnedSubject)
+        throw new AppError(
+          409,
+          "MAPPED_EPISODE_MISSING",
+          `Bangumi 条目 ${subjectId} 没有正片章节，请检查所选条目`,
+        );
+
       if (!episode)
         throw new NeedsConfirmation(
           [],
           [...trace, { step: "episode", reason: "电影没有正片章节" }],
         );
 
+      return { subjectId, episodeId: episode.id };
+    }
+
+    if (pinnedSubject) {
+      const episode = findLocalEpisode(episodes, item.episode);
+
+      if (!episode)
+        throw new AppError(
+          409,
+          "MAPPED_EPISODE_MISSING",
+          `Bangumi 条目 ${subjectId} 中找不到${item.season === 0 ? "特别篇第" : "第"} ${item.episode} 集，请检查条目或集数偏移`,
+        );
+
+      trace.push({
+        step: "episode",
+        method: "manual",
+        subjectId,
+        episodeId: episode.id,
+      });
       return { subjectId, episodeId: episode.id };
     }
 
@@ -604,21 +642,25 @@ export abstract class MatchingService {
   }
 
   static candidates(context: AppContext) {
-    const groups = new Map<
-      string,
-      ReturnType<typeof listPendingCandidates>[number] & { taskCount: number }
-    >();
+    const groups = new Map<string, CandidateGroup>();
 
-    for (const candidate of listPendingCandidates(context.database)) {
+    for (const { candidate, ...detail } of listPendingCandidateDetails(
+      context.database,
+    )) {
       const key = JSON.stringify([candidate.title, candidate.season]);
       const group = groups.get(key);
 
       if (!group) {
-        groups.set(key, { ...candidate, taskCount: 1 });
+        groups.set(key, {
+          ...candidate,
+          taskCount: 1,
+          tasks: [{ ...detail, jobId: candidate.jobId }],
+        });
         continue;
       }
 
       group.taskCount++;
+      group.tasks.push({ ...detail, jobId: candidate.jobId });
       const choiceIds = new Set(group.choices.map((choice) => choice.id));
       for (const choice of candidate.choices) {
         if (!choiceIds.has(choice.id)) {
@@ -628,7 +670,14 @@ export abstract class MatchingService {
       }
     }
 
-    return [...groups.values()];
+    return [...groups.values()].map((group) => ({
+      ...group,
+      tasks: group.tasks.sort(
+        (a, b) =>
+          (a.episode ?? Infinity) - (b.episode ?? Infinity) ||
+          a.jobId.localeCompare(b.jobId),
+      ),
+    }));
   }
 
   static resolve(
