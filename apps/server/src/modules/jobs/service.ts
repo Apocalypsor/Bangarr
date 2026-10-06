@@ -47,10 +47,25 @@ export abstract class JobsService {
           updatedAt: now,
         });
 
-        JobsService.event("info", "queued", "任务已加入队列", job.id);
-
         return { job, created: true };
       },
+      "immediate",
+    );
+  }
+
+  static enqueueBatch(
+    context: Pick<AppContext, "database" | "now">,
+    inputs: EnqueueInput[],
+  ) {
+    if (!inputs.length) return 0;
+    return transaction(
+      context.database,
+      () =>
+        inputs.reduce(
+          (count, input) =>
+            count + Number(JobsService.enqueue(context, input).created),
+          0,
+        ),
       "immediate",
     );
   }

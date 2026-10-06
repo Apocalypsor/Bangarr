@@ -1,57 +1,200 @@
 import { timingSafeEqual } from "node:crypto";
 import type { PlexItem } from "@server/clients/plex";
 import { PlexClient, parsePlexItem } from "@server/clients/plex";
+import { transaction } from "@server/db/client";
+import { readPlexAccounts, writePlexAccounts } from "@server/db/plex";
 import { AccountService } from "@server/modules/accounts/service";
 import { JobsService } from "@server/modules/jobs/service";
+import type {
+  PlexAccountInput,
+  PlexConnectionInput,
+} from "@server/modules/plex/model";
 import { isObject } from "@server/modules/plex/utils";
 import { SettingsService } from "@server/modules/settings/service";
 import type { AppContext } from "@server/types";
 import { AppError } from "@server/utils/errors";
 import { tokenDigest } from "@server/utils/secrets";
+import { validateHttpUrl } from "@server/utils/url";
+import { Cron } from "croner";
 
 export abstract class PlexService {
-  static client(context: AppContext) {
-    const config = SettingsService.read(context).plex;
-
-    if (!config.url || !config.token)
-      throw new AppError(400, "PLEX_INCOMPLETE", "请先保存 Plex 地址与 Token");
-
-    return new PlexClient(config.url, config.token, context.transport ?? fetch);
+  static list(context: AppContext) {
+    return readPlexAccounts(context.database).map(({ token, ...account }) => ({
+      ...account,
+      token: "",
+      tokenConfigured: Boolean(token),
+    }));
   }
 
-  static async inspect(context: AppContext) {
-    const client = PlexService.client(context);
+  static get(context: AppContext, id: string) {
+    const account = readPlexAccounts(context.database).find(
+      (row) => row.id === id,
+    );
+    if (!account)
+      throw new AppError(404, "PLEX_ACCOUNT_MISSING", "Plex 账号不存在");
+    return {
+      ...account,
+      token: account.token ? context.vault.open(account.token) : "",
+    };
+  }
 
+  static async save(context: AppContext, input: PlexAccountInput, id?: string) {
+    const previous = id ? PlexService.get(context, id) : null;
+    const value = {
+      ...input,
+      name: input.name.trim(),
+      userName: input.userName.trim(),
+      url: input.url.trim().replace(/\/$/, ""),
+      token: input.token.trim() || previous?.token || "",
+    };
+    if (!value.name || !value.userName || !value.token)
+      throw new AppError(
+        400,
+        "PLEX_INCOMPLETE",
+        "请填写账号名称、用户名和 Token",
+      );
+    validateHttpUrl(value.url);
+    try {
+      const cron = new Cron(value.cron, {
+        paused: true,
+        timezone: SettingsService.read(context).scheduler.timezone,
+      });
+      const next = cron.nextRun();
+      cron.stop();
+      if (!next) throw new Error();
+    } catch {
+      throw new AppError(400, "INVALID_SCHEDULE", "请检查扫描频率");
+    }
+
+    const connectionChanged =
+      !previous || previous.url !== value.url || previous.token !== value.token;
+    let serverId = previous?.serverId ?? "";
+    if (connectionChanged || (!serverId && value.enabled)) {
+      const client = new PlexClient(value.url, value.token, context.transport);
+      const [server, libraries] = await Promise.all([
+        client.identity(),
+        client.libraries(),
+      ]);
+      if (
+        value.libraryIds.some(
+          (libraryId) => !libraries.some((library) => library.id === libraryId),
+        )
+      ) {
+        throw new AppError(
+          400,
+          "PLEX_LIBRARY_MISSING",
+          "所选媒体库不可访问，请重新选择",
+        );
+      }
+      serverId = server.id;
+    }
+
+    const accountId = id ?? crypto.randomUUID();
+    transaction(
+      context.database,
+      () => {
+        AccountService.materializeBindings(context);
+        const accounts = readPlexAccounts(context.database);
+        if (id && !accounts.some((row) => row.id === id))
+          throw new AppError(404, "PLEX_ACCOUNT_MISSING", "Plex 账号不存在");
+        if (
+          accounts.some(
+            (row) =>
+              row.id !== accountId &&
+              (row.serverId === serverId ||
+                (!row.serverId && row.url === value.url)) &&
+              row.userName === value.userName,
+          )
+        )
+          throw new AppError(
+            409,
+            "PLEX_ACCOUNT_EXISTS",
+            "此服务器的 Plex 用户已添加",
+          );
+        const account = {
+          ...value,
+          id: accountId,
+          serverId,
+          token: context.vault.seal(value.token),
+        };
+        writePlexAccounts(context.database, [
+          ...accounts.filter((row) => row.id !== accountId),
+          account,
+        ]);
+      },
+      "immediate",
+    );
+    return PlexService.list(context).find((row) => row.id === accountId);
+  }
+
+  static delete(context: AppContext, id: string) {
+    transaction(
+      context.database,
+      () => {
+        PlexService.get(context, id);
+        AccountService.materializeBindings(context);
+        writePlexAccounts(
+          context.database,
+          readPlexAccounts(context.database).filter((row) => row.id !== id),
+        );
+      },
+      "immediate",
+    );
+    return { ok: true };
+  }
+
+  static async testConnection(context: AppContext, input: PlexConnectionInput) {
+    const url = input.url.trim().replace(/\/$/, "");
+    validateHttpUrl(url);
+
+    const saved = input.accountId
+      ? PlexService.get(context, input.accountId)
+      : null;
+    const token = input.token.trim() || (saved?.url === url ? saved.token : "");
+    if (!token)
+      throw new AppError(400, "PLEX_TOKEN_REQUIRED", "请填写 Plex Token");
+
+    const client = new PlexClient(url, token, context.transport);
     const [server, libraries] = await Promise.all([
       client.identity(),
       client.libraries(),
     ]);
-
     return { server, libraries };
   }
 
-  static scan(context: AppContext, full = false) {
-    const config = SettingsService.read(context);
-
-    if (!config.plex.enabled)
-      throw new AppError(400, "PLEX_DISABLED", "请先启用 Plex 同步");
-
-    if (!AccountService.targets(context, config.plex.userName).length)
-      throw new AppError(
-        400,
-        "NO_ACCOUNT",
-        "尚未绑定此 Plex 用户的 Bangumi 账号",
-      );
-
-    return JobsService.enqueue(context, {
-      kind: "plex-scan",
-      dedupeKey: "plex-scan",
-      payload: { full },
-      maxAttempts: config.scheduler.maxAttempts,
+  static inspect(context: AppContext, id: string) {
+    const account = PlexService.get(context, id);
+    return PlexService.testConnection(context, {
+      url: account.url,
+      token: "",
+      accountId: id,
     });
   }
 
-  static webhook(context: AppContext, key: string, payload: unknown) {
+  static scan(context: AppContext, id: string, full = false) {
+    const account = PlexService.get(context, id);
+    if (!account.enabled)
+      throw new AppError(400, "PLEX_DISABLED", "请先启用此 Plex 账号");
+    if (!AccountService.targets(context, id).length)
+      throw new AppError(
+        400,
+        "NO_ACCOUNT",
+        "此 Plex 账号尚未绑定 Bangumi 账号",
+      );
+    return JobsService.enqueue(context, {
+      kind: "plex-scan",
+      dedupeKey: `plex-scan:${id}`,
+      payload: {
+        full,
+        plexAccountId: id,
+        plexAccountName: account.name,
+        userName: account.userName,
+      },
+      maxAttempts: SettingsService.read(context).scheduler.maxAttempts,
+    });
+  }
+
+  static async webhook(context: AppContext, key: string, payload: unknown) {
     PlexService.authenticate(context, key);
 
     if (!isObject(payload))
@@ -85,7 +228,48 @@ export abstract class PlexService {
 
     const action = event === "media.play" ? "watching" : "watched";
 
-    return PlexService.enqueue(context, item, serverId, userName, action);
+    const source = readPlexAccounts(context.database).find(
+      (account) =>
+        account.enabled &&
+        account.userName === userName &&
+        (!account.serverId || account.serverId === serverId),
+    );
+    if (!source)
+      throw new AppError(
+        403,
+        "PLEX_ACCOUNT_UNBOUND",
+        "此 Plex 账号未配置或已停用",
+      );
+    if (!source.serverId) {
+      const configured = PlexService.get(context, source.id);
+      const actual = await new PlexClient(
+        configured.url,
+        configured.token,
+        context.transport,
+      ).identity();
+      if (actual.id !== serverId)
+        throw new AppError(403, "PLEX_SERVER_MISMATCH", "Plex 服务器不匹配");
+      transaction(
+        context.database,
+        () => {
+          writePlexAccounts(
+            context.database,
+            readPlexAccounts(context.database).map((row) =>
+              row.id === source.id ? { ...row, serverId } : row,
+            ),
+          );
+        },
+        "immediate",
+      );
+    }
+    return PlexService.enqueue(
+      context,
+      item,
+      serverId,
+      userName,
+      action,
+      source.id,
+    );
   }
 
   private static authenticate(context: AppContext, key: string) {
@@ -104,8 +288,9 @@ export abstract class PlexService {
     serverId: string,
     userName: string,
     action: "watching" | "watched",
+    plexAccountId: string,
   ) {
-    const targets = AccountService.targets(context, userName);
+    const targets = AccountService.targets(context, plexAccountId);
 
     if (!targets.length)
       throw new AppError(403, "NO_ACCOUNT", "此 Plex 用户未绑定 Bangumi 账号");
@@ -124,6 +309,8 @@ export abstract class PlexService {
             accountId: account.id,
             action,
             source: "plex",
+            plexAccountId,
+            plexAccountName: PlexService.get(context, plexAccountId).name,
           },
           maxAttempts: SettingsService.read(context).scheduler.maxAttempts,
         }).job.id,

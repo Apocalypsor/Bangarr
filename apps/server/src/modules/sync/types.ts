@@ -6,6 +6,8 @@ export interface SyncPayload {
   scope: string;
   userName: string;
   accountId: string;
+  plexAccountId?: string;
+  plexAccountName?: string;
   action: "watching" | "watched";
   source: string;
   full?: boolean;

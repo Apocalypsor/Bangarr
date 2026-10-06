@@ -3,6 +3,7 @@ import {
   ErrorState,
   LoadingState,
 } from "@page/components/page-state";
+import { RefreshButton } from "@page/components/refresh-button";
 import { Badge } from "@page/components/ui/badge";
 import { Button } from "@page/components/ui/button";
 import {
@@ -17,10 +18,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@page/components/ui/dialog";
+import { Field, FieldGroup, FieldLabel } from "@page/components/ui/field";
 import { Input } from "@page/components/ui/input";
 import {
   Select,
   SelectContent,
+  SelectGroup,
   SelectItem,
   SelectTrigger,
   SelectValue,
@@ -33,6 +36,7 @@ import {
   TableHeader,
   TableRow,
 } from "@page/components/ui/table";
+import { usePlexAccountsQuery } from "@page/hooks/use-plex-queries";
 import {
   type RecordFilters,
   useRecordQuery,
@@ -56,7 +60,16 @@ export const RecordsPage = () => {
   const [status, setStatus] = useState("all");
   const [mediaType, setMediaType] = useState("all");
 
-  const records = useRecordsQuery({ page, filters, status, mediaType });
+  const records = useRecordsQuery({ page, filters });
+  const plexAccounts = usePlexAccountsQuery();
+  const plexUsers = [
+    ...new Set([
+      ...(plexAccounts.data ?? []).map((account) => account.userName),
+      ...(userName ? [userName] : []),
+    ]),
+  ]
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
 
   const selectedQuery = useRecordQuery(detail);
 
@@ -71,108 +84,160 @@ export const RecordsPage = () => {
 
   return (
     <div className="flex flex-col gap-6">
-      <header>
+      <header className="flex items-center justify-between gap-4">
         <h1 className="text-3xl font-semibold tracking-tight">同步记录</h1>
+        <RefreshButton
+          onRefresh={() =>
+            records.refetch({ throwOnError: true, cancelRefetch: false })
+          }
+        />
       </header>
 
-      <form
-        className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setFilters({
-            search: search || undefined,
-            userName: userName || undefined,
-            from: from ? new Date(`${from}T00:00:00`).getTime() : undefined,
-            to: to ? new Date(`${to}T23:59:59.999`).getTime() : undefined,
-          });
-
-          setPage(0);
-        }}
-      >
-        <Input
-          aria-label="作品标题"
-          placeholder="作品标题"
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-        />
-        <Input
-          aria-label="Plex 用户名筛选"
-          placeholder="Plex 用户名"
-          value={userName}
-          onChange={(event) => setUserName(event.target.value)}
-        />
-        <Select
-          value={status}
-          onValueChange={(value) => {
-            setStatus(value);
-            setPage(0);
-          }}
-        >
-          <SelectTrigger aria-label="记录状态">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {[
-              ["all", "全部状态"],
-              ["success", "成功"],
-              ["error", "失败"],
-              ["pending", "待确认"],
-              ["ignored", "已忽略"],
-            ].map(([value, label]) => (
-              <SelectItem key={value} value={value ?? ""}>
-                {label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select
-          value={mediaType}
-          onValueChange={(value) => {
-            setMediaType(value);
-            setPage(0);
-          }}
-        >
-          <SelectTrigger aria-label="媒体类型">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">全部媒体</SelectItem>
-            <SelectItem value="episode">剧集</SelectItem>
-            <SelectItem value="movie">电影</SelectItem>
-          </SelectContent>
-        </Select>
-        <Input
-          aria-label="起始日期（本地时区）"
-          type="date"
-          value={from}
-          onChange={(event) => setFrom(event.target.value)}
-        />
-        <Input
-          aria-label="结束日期（本地时区）"
-          type="date"
-          value={to}
-          onChange={(event) => setTo(event.target.value)}
-        />
-        <div className="flex gap-2">
-          <Button type="submit">应用筛选</Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => {
-              setSearch("");
-              setUserName("");
-              setFrom("");
-              setTo("");
-              setFilters({});
-              setStatus("all");
-              setMediaType("all");
+      <Card>
+        <CardContent>
+          <form
+            aria-label="筛选同步记录"
+            className="flex flex-col gap-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              setFilters({
+                search: search.trim() || undefined,
+                userName: userName.trim() || undefined,
+                status: status === "all" ? undefined : status,
+                mediaType:
+                  mediaType === "movie" || mediaType === "episode"
+                    ? mediaType
+                    : undefined,
+                from: from ? new Date(`${from}T00:00:00`).getTime() : undefined,
+                to: to ? new Date(`${to}T23:59:59.999`).getTime() : undefined,
+              });
               setPage(0);
             }}
           >
-            重置
-          </Button>
-        </div>
-      </form>
+            <FieldGroup className="grid gap-4 sm:grid-cols-2">
+              <Field className="min-w-0">
+                <FieldLabel htmlFor="records-search">作品</FieldLabel>
+                <Input
+                  id="records-search"
+                  placeholder="搜索作品标题"
+                  value={search}
+                  onChange={(event) => setSearch(event.target.value)}
+                />
+              </Field>
+              <Field className="min-w-0">
+                <FieldLabel htmlFor="records-user">Plex 用户</FieldLabel>
+                <Select
+                  value={userName ? `user:${userName}` : "all"}
+                  onValueChange={(value) =>
+                    setUserName(value === "all" ? "" : value.slice(5))
+                  }
+                  disabled={plexAccounts.isPending}
+                >
+                  <SelectTrigger id="records-user" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="all">全部用户</SelectItem>
+                      {plexUsers.map((name) => (
+                        <SelectItem key={name} value={`user:${name}`}>
+                          {name}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+                {plexAccounts.error && (
+                  <ErrorState error={plexAccounts.error} />
+                )}
+              </Field>
+            </FieldGroup>
+
+            <FieldGroup className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <Field className="min-w-0">
+                <FieldLabel htmlFor="records-status">状态</FieldLabel>
+                <Select value={status} onValueChange={setStatus}>
+                  <SelectTrigger id="records-status" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      {[
+                        ["all", "全部状态"],
+                        ["success", "成功"],
+                        ["error", "失败"],
+                        ["pending", "待确认"],
+                        ["ignored", "已忽略"],
+                      ].map(([value, label]) => (
+                        <SelectItem key={value} value={value ?? ""}>
+                          {label}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field className="min-w-0">
+                <FieldLabel htmlFor="records-media">媒体类型</FieldLabel>
+                <Select value={mediaType} onValueChange={setMediaType}>
+                  <SelectTrigger id="records-media" className="w-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectGroup>
+                      <SelectItem value="all">全部媒体</SelectItem>
+                      <SelectItem value="episode">剧集</SelectItem>
+                      <SelectItem value="movie">电影</SelectItem>
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field className="min-w-0">
+                <FieldLabel htmlFor="records-from">开始日期</FieldLabel>
+                <Input
+                  id="records-from"
+                  aria-label="开始日期（本地时区）"
+                  type="date"
+                  value={from}
+                  max={to || undefined}
+                  onChange={(event) => setFrom(event.target.value)}
+                />
+              </Field>
+              <Field className="min-w-0">
+                <FieldLabel htmlFor="records-to">结束日期</FieldLabel>
+                <Input
+                  id="records-to"
+                  aria-label="结束日期（本地时区）"
+                  type="date"
+                  value={to}
+                  min={from || undefined}
+                  onChange={(event) => setTo(event.target.value)}
+                />
+              </Field>
+            </FieldGroup>
+
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  setSearch("");
+                  setUserName("");
+                  setFrom("");
+                  setTo("");
+                  setFilters({});
+                  setStatus("all");
+                  setMediaType("all");
+                  setPage(0);
+                }}
+              >
+                重置
+              </Button>
+              <Button type="submit">筛选</Button>
+            </div>
+          </form>
+        </CardContent>
+      </Card>
 
       {records.error && <ErrorState error={records.error} />}
       {records.error && !records.data ? null : records.isPending ? (
@@ -238,7 +303,7 @@ export const RecordsPage = () => {
             <div className="mt-4 flex items-center justify-end gap-3">
               <Button
                 variant="outline"
-                disabled={page === 0 || records.isFetching}
+                disabled={page === 0 || records.isPlaceholderData}
                 onClick={() => setPage((p) => p - 1)}
               >
                 上一页
@@ -249,7 +314,8 @@ export const RecordsPage = () => {
               <Button
                 variant="outline"
                 disabled={
-                  (page + 1) * 30 >= records.data.total || records.isFetching
+                  (page + 1) * 30 >= records.data.total ||
+                  records.isPlaceholderData
                 }
                 onClick={() => setPage((p) => p + 1)}
               >

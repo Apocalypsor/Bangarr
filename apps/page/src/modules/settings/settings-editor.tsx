@@ -2,7 +2,6 @@ import { Button } from "@page/components/ui/button";
 import { UnsavedChanges } from "@page/components/unsaved-changes";
 import type { PublicSettings, Settings } from "@page/hooks/use-settings-query";
 import { api, unwrap } from "@page/lib/api";
-import { PlexSettings } from "@page/modules/plex/plex-settings";
 import { GeneralSettings } from "@page/modules/settings/general-settings";
 import { TitleIndex } from "@page/modules/settings/title-index";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -11,10 +10,9 @@ import { toast } from "sonner";
 
 interface SettingsEditorProps {
   initial: PublicSettings;
-  plexOnly: boolean;
 }
 
-export const SettingsEditor = ({ initial, plexOnly }: SettingsEditorProps) => {
+export const SettingsEditor = ({ initial }: SettingsEditorProps) => {
   const client = useQueryClient();
   const [draft, setDraft] = useState<Settings>(() => structuredClone(initial));
   const [baseline, setBaseline] = useState(() => JSON.stringify(initial));
@@ -34,14 +32,12 @@ export const SettingsEditor = ({ initial, plexOnly }: SettingsEditorProps) => {
     mutationFn: async (submitted: Settings) => {
       const latest = unwrap(await api.api.settings.get());
 
-      const value = plexOnly
-        ? { ...latest, plex: submitted.plex }
-        : {
-            ...latest,
-            sync: submitted.sync,
-            scheduler: submitted.scheduler,
-            bangumi: submitted.bangumi,
-          };
+      const value = {
+        ...latest,
+        sync: submitted.sync,
+        scheduler: submitted.scheduler,
+        bangumi: submitted.bangumi,
+      };
 
       value.plex = {
         ...value.plex,
@@ -78,23 +74,10 @@ export const SettingsEditor = ({ initial, plexOnly }: SettingsEditorProps) => {
     <div className="flex flex-col gap-6">
       <UnsavedChanges dirty={dirty} />
 
-      <h1 className="text-3xl font-semibold tracking-tight">
-        {plexOnly ? "Plex" : "同步设置"}
-      </h1>
+      <h1 className="text-3xl font-semibold tracking-tight">同步设置</h1>
 
-      {plexOnly ? (
-        <PlexSettings
-          draft={draft}
-          update={update}
-          dirty={dirty}
-          tokenConfigured={initial.plex.tokenConfigured}
-        />
-      ) : (
-        <>
-          <GeneralSettings draft={draft} update={update} />
-          <TitleIndex />
-        </>
-      )}
+      <GeneralSettings draft={draft} update={update} />
+      <TitleIndex />
 
       <div className="flex justify-start">
         <Button

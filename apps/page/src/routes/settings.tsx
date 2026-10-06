@@ -8,6 +8,7 @@ import {
 import { useSettingsQuery } from "@page/hooks/use-settings-query";
 import { AccountSettings } from "@page/modules/accounts/account-settings";
 import { AdminSettings } from "@page/modules/auth/admin-settings";
+import { PlexSettings } from "@page/modules/plex/plex-settings";
 import { SettingsEditor } from "@page/modules/settings/settings-editor";
 
 export const SettingsPage = () => {
@@ -30,7 +31,7 @@ export const SettingsPage = () => {
         forceMount
         className="data-[state=inactive]:hidden"
       >
-        <SettingsEditor key="plex" initial={config.data} plexOnly />
+        <PlexSettings />
       </TabsContent>
       <TabsContent
         value="accounts"
@@ -44,7 +45,7 @@ export const SettingsPage = () => {
         forceMount
         className="flex flex-col gap-6 data-[state=inactive]:hidden"
       >
-        <SettingsEditor key="sync" initial={config.data} plexOnly={false} />
+        <SettingsEditor key="sync" initial={config.data} />
       </TabsContent>
       <TabsContent
         value="admin"

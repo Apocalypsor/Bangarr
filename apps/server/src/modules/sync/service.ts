@@ -10,12 +10,13 @@ import {
 import { AccountService } from "@server/modules/accounts/service";
 import { CatalogService } from "@server/modules/catalog/service";
 import { JobsService } from "@server/modules/jobs/service";
-import type { Job } from "@server/modules/jobs/types";
+import type { EnqueueInput, Job } from "@server/modules/jobs/types";
 import {
   BlockedTitle,
   MatchingService,
   NeedsConfirmation,
 } from "@server/modules/matching/service";
+import { PlexService } from "@server/modules/plex/service";
 import { SettingsService } from "@server/modules/settings/service";
 import type { SyncPayload } from "@server/modules/sync/types";
 import { parseSyncPayload } from "@server/modules/sync/utils";
@@ -87,38 +88,45 @@ export abstract class SyncService {
 
   private static async scan(context: AppContext, job: Job, owner: string) {
     const config = SettingsService.read(context);
-
-    if (!config.plex.enabled)
-      return { skipped: true, reason: "Plex 主动同步已关闭" };
-
-    const targets = AccountService.targets(context, config.plex.userName);
-
+    const source = PlexService.get(
+      context,
+      String(job.payload.plexAccountId ?? "default"),
+    );
+    if (!source.enabled) return { skipped: true, reason: "Plex 账号已停用" };
+    const targets = AccountService.targets(context, source.id);
     if (!targets.length)
       throw new AppError(
         400,
         "NO_ACCOUNT",
-        "没有绑定此 Plex 用户的 Bangumi 账号",
+        "此 Plex 账号尚未绑定 Bangumi 账号",
       );
 
     const client = new PlexClient(
-      config.plex.url,
-      config.plex.token,
+      source.url,
+      source.token,
       context.transport ?? fetch,
     );
 
     JobsService.reportProgress(context, job.id, owner, "正在连接 Plex");
     const server = await client.identity();
-    const scope = tokenDigest(
-      JSON.stringify([server.id, config.plex.userName]),
-    );
+    const scope = tokenDigest(JSON.stringify([server.id, source.userName]));
     let queued = 0;
     let skipped = 0;
     let scanned = 0;
     let lastProgress = 0;
+    let batch: EnqueueInput[] = [];
+    const flush = async () => {
+      const added = JobsService.enqueueBatch(context, batch);
+      queued += added;
+      skipped += batch.length - added;
+      batch = [];
+      await Bun.sleep(0);
+    };
     JobsService.reportProgress(context, job.id, owner, "正在扫描媒体库");
 
-    for await (const item of client.watched(config.plex.libraryIds)) {
+    for await (const item of client.watched(source.libraryIds)) {
       scanned++;
+      if (scanned % 25 === 0) await flush();
       for (const account of targets) {
         if (
           !job.payload.full &&
@@ -132,22 +140,23 @@ export abstract class SyncService {
         const payload: SyncPayload = {
           item,
           scope,
-          userName: config.plex.userName,
+          userName: source.userName,
           accountId: account.id,
           action: "watched",
           source: "plex_poll",
+          plexAccountId: source.id,
+          plexAccountName: source.name,
           full: job.payload.full === true,
         };
 
-        const result = JobsService.enqueue(context, {
+        batch.push({
           kind: "sync",
           dedupeKey: `sync:${scope}:${item.ratingKey}:${account.id}:watched`,
           payload: { ...payload },
           maxAttempts: config.scheduler.maxAttempts,
         });
 
-        if (result.created) queued++;
-        else skipped++;
+        if (batch.length >= 50) await flush();
       }
 
       if (Date.now() - lastProgress >= 500) {
@@ -161,6 +170,7 @@ export abstract class SyncService {
       }
     }
 
+    await flush();
     return { queued, skipped };
   }
 
@@ -194,7 +204,12 @@ export abstract class SyncService {
     try {
       const account = AccountService.get(context, accountId);
 
-      if (!account.enabled || !account.plexUsers.includes(userName))
+      if (
+        !account.enabled ||
+        !AccountService.bindings(context, account.plexUsers).includes(
+          payload.plexAccountId ?? "default",
+        )
+      )
         throw new AppError(
           403,
           "ACCOUNT_UNBOUND",
@@ -202,6 +217,24 @@ export abstract class SyncService {
         );
 
       JobsService.reportProgress(context, job.id, owner, "正在匹配作品与章节");
+
+      if (payload.plexAccountId) {
+        const sourceAccount = PlexService.get(context, payload.plexAccountId);
+        if (!sourceAccount.enabled)
+          throw new AppError(403, "PLEX_DISABLED", "Plex 账号已停用");
+        if (
+          sourceAccount.userName !== userName ||
+          (sourceAccount.serverId &&
+            tokenDigest(JSON.stringify([sourceAccount.serverId, userName])) !==
+              scope)
+        ) {
+          throw new AppError(
+            409,
+            "PLEX_ACCOUNT_CHANGED",
+            "Plex 账号已变更，请重新扫描",
+          );
+        }
+      }
 
       // 保存匹配结果，重试时沿用已确认的目标。
       const match =

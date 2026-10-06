@@ -168,7 +168,10 @@ export const TaskList = () => {
                             )}
                           </TableCell>
                           <TableCell>
-                            {job.accountName || job.userName || "—"}
+                            {job.plexAccountName || job.userName || "—"}
+                            {job.accountName && (
+                              <span> → {job.accountName}</span>
+                            )}
                           </TableCell>
                           <TableCell>
                             <Badge

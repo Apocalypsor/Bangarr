@@ -1,4 +1,5 @@
 import type { AppDatabase } from "@server/db/client";
+import { readPlexAccounts } from "@server/db/plex";
 import { CatalogService } from "@server/modules/catalog/service";
 import { JobsService } from "@server/modules/jobs/service";
 import { SettingsService } from "@server/modules/settings/service";
@@ -11,7 +12,7 @@ export const startTasks = (database: AppDatabase, vault: SecretVault) => {
   const context: AppContext = { database, vault };
   const owner = crypto.randomUUID();
   let active: Promise<boolean> | null = null;
-  let scheduler: Cron | null = null;
+  let schedulers: Cron[] = [];
   let scheduleKey = "";
   let lastMaintenance = 0;
   let ready = false;
@@ -20,31 +21,38 @@ export const startTasks = (database: AppDatabase, vault: SecretVault) => {
   const refreshRuntime = () => {
     const config = SettingsService.read(context);
 
+    const accounts = readPlexAccounts(database);
     const key = JSON.stringify([
-      config.plex.enabled,
-      config.plex.cron,
+      accounts.map(({ id, enabled, cron }) => ({ id, enabled, cron })),
       config.scheduler.timezone,
     ]);
 
     if (key !== scheduleKey) {
-      scheduler?.stop();
-      scheduler = null;
-      scheduleKey = key;
-
-      if (config.plex.enabled) {
-        scheduler = new Cron(
-          config.plex.cron,
-          { timezone: config.scheduler.timezone, protect: true },
-          () => {
-            JobsService.enqueue(context, {
-              kind: "plex-scan",
-              dedupeKey: "plex-scan",
-              payload: { full: false },
-              maxAttempts: SettingsService.read(context).scheduler.maxAttempts,
-            });
-          },
+      for (const scheduler of schedulers) scheduler.stop();
+      schedulers = accounts
+        .filter((account) => account.enabled)
+        .map(
+          (account) =>
+            new Cron(
+              account.cron,
+              { timezone: config.scheduler.timezone, protect: true },
+              () => {
+                JobsService.enqueue(context, {
+                  kind: "plex-scan",
+                  dedupeKey: `plex-scan:${account.id}`,
+                  payload: {
+                    full: false,
+                    plexAccountId: account.id,
+                    plexAccountName: account.name,
+                    userName: account.userName,
+                  },
+                  maxAttempts:
+                    SettingsService.read(context).scheduler.maxAttempts,
+                });
+              },
+            ),
         );
-      }
+      scheduleKey = key;
     }
 
     if (Date.now() - lastMaintenance > 60_000) {
@@ -73,7 +81,7 @@ export const startTasks = (database: AppDatabase, vault: SecretVault) => {
     stopping = true;
     clearInterval(refreshTimer);
     clearInterval(workerTimer);
-    scheduler?.stop();
+    for (const scheduler of schedulers) scheduler.stop();
     await active;
   };
 };

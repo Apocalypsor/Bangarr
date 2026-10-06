@@ -166,63 +166,82 @@ export const listTaskPage = (database: AppDatabase, filter: JobsQuery) => {
   const limit = filter.limit ?? 30;
   const offset = filter.offset ?? 0;
 
-  return database.sqlite.transaction(() => ({
-    items: database.orm
-      .select({
-        id: jobs.id,
-        kind: jobs.kind,
-        state: jobs.state,
-        attempt: jobs.attempt,
-        maxAttempts: jobs.maxAttempts,
-        lastError: jobs.lastError,
-        result: jobs.result,
-        availableAt: jobs.availableAt,
-        createdAt: jobs.createdAt,
-        updatedAt: jobs.updatedAt,
-        title: sql<
-          string | null
-        >`json_extract(${jobs.payload}, '$.item.title')`,
-        season: sql<
-          number | null
-        >`json_extract(${jobs.payload}, '$.item.season')`,
-        episode: sql<
-          number | null
-        >`json_extract(${jobs.payload}, '$.item.episode')`,
-        userName: sql<
-          string | null
-        >`json_extract(${jobs.payload}, '$.userName')`,
-        accountName: accounts.username,
-        needsConfirmation:
-          sql<boolean>`exists(select 1 from ${candidates} where ${candidates.jobId} = ${jobs.id} and ${candidates.state} = 'pending')`.mapWith(
-            Boolean,
-          ),
-      })
+  return database.sqlite.transaction(() => {
+    const order = [
+      sql`case ${jobs.state} when 'running' then 0 when 'pending' then 1 else 2 end`,
+      desc(jobs.createdAt),
+      desc(jobs.id),
+    ];
+    const ids = database.orm
+      .select({ id: jobs.id })
       .from(jobs)
-      .leftJoin(
-        accounts,
-        eq(accounts.id, sql`json_extract(${jobs.payload}, '$.accountId')`),
-      )
       .where(where)
-      .orderBy(
-        sql`case ${jobs.state} when 'running' then 0 when 'pending' then 1 else 2 end`,
-        desc(jobs.createdAt),
-        desc(jobs.id),
-      )
+      .orderBy(...order)
       .limit(limit)
       .offset(offset)
-      .all(),
-    total:
-      database.orm
-        .select({ count: sql<number>`count(*)` })
+      .all()
+      .map((row) => row.id);
+
+    return {
+      items: ids.length
+        ? database.orm
+            .select({
+              id: jobs.id,
+              kind: jobs.kind,
+              state: jobs.state,
+              attempt: jobs.attempt,
+              maxAttempts: jobs.maxAttempts,
+              lastError: jobs.lastError,
+              result: jobs.result,
+              availableAt: jobs.availableAt,
+              createdAt: jobs.createdAt,
+              updatedAt: jobs.updatedAt,
+              title: sql<
+                string | null
+              >`json_extract(${jobs.payload}, '$.item.title')`,
+              season: sql<
+                number | null
+              >`json_extract(${jobs.payload}, '$.item.season')`,
+              episode: sql<
+                number | null
+              >`json_extract(${jobs.payload}, '$.item.episode')`,
+              userName: sql<
+                string | null
+              >`json_extract(${jobs.payload}, '$.userName')`,
+              accountName: accounts.username,
+              plexAccountName: sql<
+                string | null
+              >`json_extract(${jobs.payload}, '$.plexAccountName')`,
+              needsConfirmation:
+                sql<boolean>`exists(select 1 from ${candidates} where ${candidates.jobId} = ${jobs.id} and ${candidates.state} = 'pending')`.mapWith(
+                  Boolean,
+                ),
+            })
+            .from(jobs)
+            .leftJoin(
+              accounts,
+              eq(
+                accounts.id,
+                sql`json_extract(${jobs.payload}, '$.accountId')`,
+              ),
+            )
+            .where(inArray(jobs.id, ids))
+            .orderBy(...order)
+            .all()
+        : [],
+      total:
+        database.orm
+          .select({ count: sql<number>`count(*)` })
+          .from(jobs)
+          .where(where)
+          .get()?.count ?? 0,
+      counts: database.orm
+        .select({ state: jobs.state, count: sql<number>`count(*)` })
         .from(jobs)
-        .where(where)
-        .get()?.count ?? 0,
-    counts: database.orm
-      .select({ state: jobs.state, count: sql<number>`count(*)` })
-      .from(jobs)
-      .groupBy(jobs.state)
-      .all(),
-    limit,
-    offset,
-  }))();
+        .groupBy(jobs.state)
+        .all(),
+      limit,
+      offset,
+    };
+  })();
 };

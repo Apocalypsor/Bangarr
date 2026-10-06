@@ -137,7 +137,8 @@ describe("management authentication", () => {
       "/settings",
       "/settings/webhook",
       "/accounts",
-      "/plex/libraries",
+      "/plex/accounts",
+      "/plex/accounts/default/libraries",
       "/jobs",
       "/records",
       "/catalog",
@@ -294,6 +295,24 @@ test("Plex multipart webhook persists per-account tasks and validates the secret
   const transport = async () =>
     Response.json({ id: 1, username: "bgm-user", nickname: "" });
 
+  SettingsService.set(
+    context,
+    "plex-accounts",
+    JSON.stringify([
+      {
+        id: "default",
+        name: "alice",
+        userName: "alice",
+        url: "http://plex.test",
+        token: context.vault.seal("plex-token"),
+        enabled: true,
+        cron: "*/15 * * * *",
+        libraryIds: [],
+        serverId: "server-1",
+      },
+    ]),
+  );
+
   await AccountService.save(
     { ...context, transport },
     {
@@ -371,7 +390,7 @@ test("core management writes require a session and reject cross-origin requests"
 
   const mutations: [string, string, unknown][] = [
     ["/catalog/update", "POST", undefined],
-    ["/plex/scan", "POST", { full: false }],
+    ["/plex/accounts/default/scan", "POST", { full: false }],
     ["/jobs/id/retry", "POST", undefined],
     ["/jobs/id/cancel", "POST", undefined],
     ["/records/id/retry", "POST", undefined],

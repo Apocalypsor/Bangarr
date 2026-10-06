@@ -1,4 +1,8 @@
-import { scanSchema } from "@server/modules/plex/model";
+import {
+  plexAccountSchema,
+  plexConnectionSchema,
+  scanSchema,
+} from "@server/modules/plex/model";
 import { PlexService } from "@server/modules/plex/service";
 import { sessionGuard } from "@server/plugins/auth";
 import type { AppContext } from "@server/types";
@@ -27,7 +31,7 @@ export const webhookRoutes = (context: AppContext) =>
         throw new AppError(400, "INVALID_PAYLOAD", "Plex Webhook 格式无效");
       }
 
-      const result = PlexService.webhook(context, params.key, payload);
+      const result = await PlexService.webhook(context, params.key, payload);
 
       set.status = 202;
 
@@ -41,14 +45,32 @@ export const plexRoutes = (context: AppContext) =>
 
     .use(sessionGuard(context))
 
-    .get("/libraries", () => PlexService.inspect(context))
+    .post("/test", ({ body }) => PlexService.testConnection(context, body), {
+      body: plexConnectionSchema,
+    })
+
+    .get("/accounts", () => PlexService.list(context))
+    .post("/accounts", ({ body }) => PlexService.save(context, body), {
+      body: plexAccountSchema,
+    })
+    .put(
+      "/accounts/:id",
+      ({ params, body }) => PlexService.save(context, body, params.id),
+      { body: plexAccountSchema },
+    )
+    .delete("/accounts/:id", ({ params }) =>
+      PlexService.delete(context, params.id),
+    )
+    .get("/accounts/:id/libraries", ({ params }) =>
+      PlexService.inspect(context, params.id),
+    )
 
     .post(
-      "/scan",
-      ({ body, set }) => {
+      "/accounts/:id/scan",
+      ({ body, params, set }) => {
         set.status = 202;
 
-        return PlexService.scan(context, body.full);
+        return PlexService.scan(context, params.id, body.full);
       },
       { body: scanSchema },
     );

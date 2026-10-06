@@ -16,5 +16,8 @@ export const useJobsQuery = (filters: JobFilters, page: number) =>
         }),
       ),
     refetchInterval: 2000,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
+    staleTime: 0,
     placeholderData: keepPreviousData,
   });

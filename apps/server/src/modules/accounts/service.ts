@@ -6,6 +6,7 @@ import {
   listEnabledAccounts,
   upsertAccount,
 } from "@server/db/accounts";
+import { readPlexAccounts } from "@server/db/plex";
 import type { AccountInput } from "@server/modules/accounts/types";
 import { SettingsService } from "@server/modules/settings/service";
 import type { AppContext } from "@server/types";
@@ -16,6 +17,7 @@ export abstract class AccountService {
     return listAccounts(context.database).map(
       ({ accessToken, ...account }) => ({
         ...account,
+        plexUsers: AccountService.bindings(context, account.plexUsers),
         tokenConfigured: Boolean(accessToken),
       }),
     );
@@ -42,12 +44,51 @@ export abstract class AccountService {
 
   static targets(context: AppContext, plexUser: string) {
     return listEnabledAccounts(context.database).filter((account) =>
-      account.plexUsers.includes(plexUser),
+      AccountService.bindings(context, account.plexUsers).includes(plexUser),
     );
+  }
+
+  static bindings(context: AppContext, values: string[]) {
+    const sources = readPlexAccounts(context.database);
+    return [
+      ...new Set(
+        values.flatMap((value) => {
+          if (sources.some((source) => source.id === value)) return [value];
+          const legacy = sources.find(
+            (source) => source.id === "default" && source.userName === value,
+          );
+          return [legacy?.id ?? value];
+        }),
+      ),
+    ];
+  }
+
+  static materializeBindings(context: AppContext) {
+    for (const account of listAccounts(context.database)) {
+      const plexUsers = AccountService.bindings(context, account.plexUsers);
+      if (JSON.stringify(plexUsers) !== JSON.stringify(account.plexUsers)) {
+        upsertAccount(
+          context.database,
+          { plexUsers },
+          { ...account, plexUsers },
+        );
+      }
+    }
   }
 
   static async save(context: AppContext, input: AccountInput, id?: string) {
     const existing = id ? AccountService.get(context, id) : null;
+    const plexUsers = AccountService.bindings(context, input.plexUsers);
+    const sources = readPlexAccounts(context.database);
+    if (
+      plexUsers.some((value) => !sources.some((source) => source.id === value))
+    ) {
+      throw new AppError(
+        400,
+        "PLEX_ACCOUNT_MISSING",
+        "请选择已配置的 Plex 账号",
+      );
+    }
 
     const token =
       input.token.trim() ||
@@ -71,11 +112,7 @@ export abstract class AccountService {
       username: user.username,
       nickname: user.nickname ?? "",
       accessToken: context.vault.seal(token),
-      plexUsers: [
-        ...new Set(
-          input.plexUsers.map((value) => value.trim()).filter(Boolean),
-        ),
-      ],
+      plexUsers,
       enabled: input.enabled,
       private: input.private,
     };

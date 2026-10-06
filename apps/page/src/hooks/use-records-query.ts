@@ -7,24 +7,17 @@ type RecordsRequestQuery = NonNullable<
 
 export type RecordFilters = Pick<
   RecordsRequestQuery,
-  "search" | "userName" | "from" | "to"
+  "search" | "userName" | "from" | "to" | "status" | "mediaType"
 >;
 
 interface RecordsQueryOptions {
   page: number;
   filters: RecordFilters;
-  status: string;
-  mediaType: string;
 }
 
-export const useRecordsQuery = ({
-  page,
-  filters,
-  status,
-  mediaType,
-}: RecordsQueryOptions) =>
+export const useRecordsQuery = ({ page, filters }: RecordsQueryOptions) =>
   useQuery({
-    queryKey: ["records", page, filters, status, mediaType],
+    queryKey: ["records", page, filters],
     queryFn: async () =>
       unwrap(
         await api.api.records.get({
@@ -32,14 +25,13 @@ export const useRecordsQuery = ({
             offset: page * 30,
             limit: 30,
             ...filters,
-            status: status === "all" ? undefined : status,
-            mediaType:
-              mediaType === "all"
-                ? undefined
-                : (mediaType as "movie" | "episode"),
           },
         }),
       ),
+    refetchInterval: 2000,
+    refetchIntervalInBackground: true,
+    refetchOnWindowFocus: true,
+    staleTime: 0,
     placeholderData: (previous) => previous,
   });
 
@@ -47,6 +39,9 @@ export const useRecordQuery = (detail: string | null) =>
   useQuery({
     queryKey: ["record-detail", detail],
     enabled: Boolean(detail),
+    refetchInterval: 2000,
+    refetchOnWindowFocus: true,
+    staleTime: 0,
     queryFn: async () =>
       unwrap(await api.api.records({ id: detail ?? "" }).get()),
   });

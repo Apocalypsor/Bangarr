@@ -19,6 +19,8 @@ export const parseSyncPayload = (
     typeof payload.scope !== "string" ||
     typeof payload.userName !== "string" ||
     typeof payload.source !== "string" ||
+    (payload.plexAccountId !== undefined &&
+      typeof payload.plexAccountId !== "string") ||
     !["watched", "watching"].includes(String(payload.action))
   )
     throw new AppError(400, "INVALID_JOB", "任务数据不完整");

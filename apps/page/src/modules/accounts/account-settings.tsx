@@ -28,6 +28,7 @@ import {
 import { Input } from "@page/components/ui/input";
 import { Switch } from "@page/components/ui/switch";
 import { useAccountsQuery } from "@page/hooks/use-accounts-query";
+import { usePlexAccountsQuery } from "@page/hooks/use-plex-queries";
 import { api, unwrap } from "@page/lib/api";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Plus, Trash2 } from "lucide-react";
@@ -43,11 +44,12 @@ export const AccountSettings = () => {
   const client = useQueryClient();
 
   const accounts = useAccountsQuery();
+  const plexAccounts = usePlexAccountsQuery();
 
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [token, setToken] = useState("");
-  const [users, setUsers] = useState("");
+  const [users, setUsers] = useState<string[]>([]);
   const [enabled, setEnabled] = useState(true);
   const [isPrivate, setPrivate] = useState(false);
 
@@ -55,10 +57,7 @@ export const AccountSettings = () => {
     mutationFn: async () => {
       const body = {
         token,
-        plexUsers: users
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean),
+        plexUsers: users,
         enabled,
         private: isPrivate,
       };
@@ -91,7 +90,7 @@ export const AccountSettings = () => {
     const account = accounts.data?.find((row) => row.id === id);
     setEditing(id);
     setToken("");
-    setUsers(account?.plexUsers.join(",") ?? "");
+    setUsers(account?.plexUsers ?? []);
     setEnabled(account?.enabled ?? true);
     setPrivate(account?.private ?? false);
     setOpen(true);
@@ -142,7 +141,8 @@ export const AccountSettings = () => {
                   </Badge>
                   {account.plexUsers.map((user) => (
                     <Badge key={user} variant="outline">
-                      {user}
+                      {plexAccounts.data?.find((source) => source.id === user)
+                        ?.name ?? user}
                     </Badge>
                   ))}
                 </div>
@@ -208,14 +208,60 @@ export const AccountSettings = () => {
                 </Field>
 
                 <Field>
-                  <FieldLabel htmlFor="plex-users">Plex 用户名</FieldLabel>
-                  <Input
-                    id="plex-users"
-                    value={users}
-                    onChange={(e) => setUsers(e.target.value)}
-                    required
-                  />
-                  <FieldDescription>多个用户名用逗号分隔</FieldDescription>
+                  <FieldLabel>Plex 账号</FieldLabel>
+                  {plexAccounts.error && (
+                    <ErrorState error={plexAccounts.error} />
+                  )}
+                  {plexAccounts.isPending ? (
+                    <LoadingState />
+                  ) : !plexAccounts.data?.length ? (
+                    <FieldDescription>请先添加 Plex 账号</FieldDescription>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      {plexAccounts.data.map((source) => (
+                        <label
+                          key={source.id}
+                          className="flex items-center gap-2 text-sm"
+                        >
+                          <input
+                            type="checkbox"
+                            className="size-4 accent-primary"
+                            checked={users.includes(source.id)}
+                            onChange={(event) =>
+                              setUsers((current) =>
+                                event.target.checked
+                                  ? [...current, source.id]
+                                  : current.filter((id) => id !== source.id),
+                              )
+                            }
+                          />
+                          {source.name} · {source.userName}
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                  {users
+                    .filter(
+                      (id) =>
+                        !plexAccounts.data?.some((source) => source.id === id),
+                    )
+                    .map((id) => (
+                      <label
+                        key={id}
+                        className="flex items-center gap-2 text-sm text-muted-foreground"
+                      >
+                        <input
+                          type="checkbox"
+                          checked
+                          onChange={() =>
+                            setUsers((current) =>
+                              current.filter((value) => value !== id),
+                            )
+                          }
+                        />
+                        {id}（未配置）
+                      </label>
+                    ))}
                 </Field>
 
                 <Field orientation="horizontal">
@@ -236,7 +282,14 @@ export const AccountSettings = () => {
                   />
                 </Field>
 
-                <Button type="submit" disabled={save.isPending}>
+                <Button
+                  type="submit"
+                  disabled={
+                    save.isPending ||
+                    plexAccounts.isPending ||
+                    Boolean(plexAccounts.error)
+                  }
+                >
                   {save.isPending ? "正在验证…" : "保存账号"}
                 </Button>
               </FieldGroup>
