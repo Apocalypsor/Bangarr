@@ -1,0 +1,25 @@
+node_modules/
+dist/
+*.tsbuildinfo
+coverage/
+.cache/
+*.log
+.env
+.env.*
+!.env.example
+.DS_Store
+.idea/
+# Runtime data and private configuration backups
+data/
+config_backups/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+secret.key
+config.ini
+config.dev.ini
+bangumi_mapping.json
+bangumi_data_cache.json
+# Local test output
+test-results/

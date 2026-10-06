@@ -1,0 +1,2 @@
+#!/bin/sh
+exec nginx -e /dev/stderr -g 'daemon off;'

@@ -1,0 +1,58 @@
+name: Bun checks and container builds
+
+on:
+  push:
+    branches-ignore: [main]
+  pull_request:
+  workflow_call:
+    outputs:
+      bun-version:
+        description: Bun version used for verification
+        value: ${{ jobs.checks.outputs.bun-version }}
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    outputs:
+      bun-version: ${{ steps.bun.outputs.bun-version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        id: bun
+        with:
+          bun-version-file: package.json
+      - run: bun install --frozen-lockfile
+      - name: Check generated database schema
+        run: |
+          bun db:generate
+          git diff --exit-code -- apps/server/src/db/schema.sql
+
+      - run: bun check
+      - run: bun typecheck
+      - run: bun test
+      - run: bun run build
+
+  containers:
+    needs: checks
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          build-args: |
+            BUN_VERSION=${{ needs.checks.outputs.bun-version }}
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: bangarr:ci

@@ -1,0 +1,36 @@
+{
+  "name": "bangarr",
+  "version": "0.0.0",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.2",
+  "workspaces": [
+    "apps/server",
+    "apps/page"
+  ],
+  "scripts": {
+    "dev": "bun run --no-orphans --parallel dev:server dev:page",
+    "dev:server": "bun --watch apps/server/src/index.ts",
+    "dev:page": "bun --cwd apps/page dev",
+    "build": "bun --cwd apps/page build",
+    "start": "bun apps/server/src/index.ts",
+    "check": "biome check --no-errors-on-unmatched --files-ignore-unknown=true",
+    "typecheck": "tsc -p apps/server/tsconfig.json && tsc -p apps/page/tsconfig.json",
+    "prepare": "husky",
+    "db:generate": "drizzle-kit export --dialect=sqlite --schema=./apps/server/src/db/schema.ts > apps/server/src/db/schema.sql"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@types/bun": "1.4.2",
+    "drizzle-kit": "0.31.11",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.3.0",
+    "typescript": "^7.0.2"
+  },
+  "lint-staged": {
+    "*": [
+      "biome check --no-errors-on-unmatched --files-ignore-unknown=true"
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+services:
+  bangarr:
+    image: ${BANGARR_IMAGE:-ghcr.io/apocalypsor/bangarr}:${BANGARR_TAG:-latest}
+    restart: unless-stopped
+
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-8000}:8000"
+
+    volumes:
+      - ./data:/app/data
+
+    environment:
+      DATA_DIR: /app/data
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+
+    # Set these to the owner of ./data; no recursive chown runs.
+    user: "${PUID:-1000}:${PGID:-1000}"
+    stop_grace_period: 45s

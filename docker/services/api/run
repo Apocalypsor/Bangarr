@@ -1,0 +1,3 @@
+#!/bin/sh
+cd /app
+exec env HOST=127.0.0.1 PORT=3000 TRUST_PROXY=true bun apps/server/src/index.ts
