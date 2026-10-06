@@ -19,10 +19,22 @@ export const insertWatched = (
   value: typeof watched.$inferInsert,
 ) => database.orm.insert(watched).values(value).onConflictDoNothing().run();
 
-export const insertSyncRecord = (
+export const saveSyncRecord = (
   database: AppDatabase,
   value: typeof records.$inferInsert,
-) => database.orm.insert(records).values(value).run();
+) =>
+  database.orm
+    .insert(records)
+    .values(value)
+    .onConflictDoUpdate({
+      target: records.id,
+      set: {
+        ...value,
+        subjectId: value.subjectId ?? null,
+        episodeId: value.episodeId ?? null,
+      },
+    })
+    .run();
 
 export const findPendingJobCandidate = (database: AppDatabase, jobId: string) =>
   database.orm

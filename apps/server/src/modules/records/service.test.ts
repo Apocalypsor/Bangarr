@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { saveSyncRecord } from "@server/db/records";
 import { accounts, records } from "@server/db/schema";
 import { JobsService } from "@server/modules/jobs/service";
 import { RecordsService } from "@server/modules/records/service";
@@ -56,7 +57,7 @@ test("history filters before counting and paginating, with literal substring sea
   }
 });
 
-test("record retry uses the persisted original job without erasing historical outcomes", () => {
+test("retry updates the same record and its detail instead of retaining the failed result", () => {
   const ctx = testContext();
 
   try {
@@ -99,6 +100,53 @@ test("record retry uses the persisted original job without erasing historical ou
       "original error",
     );
     expect(JobsService.get(queue, job.id)?.state).toBe("failed");
+
+    const previous = ctx.database.orm.select().from(records).get();
+    if (!previous) throw new Error("missing record");
+    saveSyncRecord(ctx.database, {
+      ...previous,
+      jobId: retry.job.id,
+      status: "success",
+      message: "观看进度已同步",
+      subjectId: 10,
+      episodeId: 101,
+      trace: [],
+      createdAt: 2,
+    });
+    expect(ctx.database.orm.select().from(records).all()).toHaveLength(1);
+    expect(RecordsService.get(history, "failure")).toMatchObject({
+      id: "failure",
+      jobId: retry.job.id,
+      status: "success",
+      message: "观看进度已同步",
+      createdAt: 2,
+    });
+    expect(RecordsService.list(history, { status: "error" }).total).toBe(0);
+    expect(RecordsService.list(history, { to: 1 }).total).toBe(0);
+    expect(() => RecordsService.retry(history, "failure")).toThrow(
+      "此记录已同步成功",
+    );
+
+    const {
+      subjectId: _subjectId,
+      episodeId: _episodeId,
+      ...withoutMatch
+    } = previous;
+    saveSyncRecord(ctx.database, {
+      ...withoutMatch,
+      status: "error",
+      message: "账号已停用",
+      trace: [],
+      createdAt: 3,
+    });
+    expect(RecordsService.get(history, "failure")).toMatchObject({
+      status: "error",
+      subjectId: null,
+      episodeId: null,
+      trace: [],
+      createdAt: 3,
+    });
+    expect(ctx.database.orm.select().from(records).all()).toHaveLength(1);
   } finally {
     ctx.dispose();
   }

@@ -4,8 +4,8 @@ import {
   findPendingJobCandidate,
   findWatched,
   insertMatchingCandidate,
-  insertSyncRecord,
   insertWatched,
+  saveSyncRecord,
 } from "@server/db/records";
 import { AccountService } from "@server/modules/accounts/service";
 import { CatalogService } from "@server/modules/catalog/service";
@@ -186,7 +186,9 @@ export abstract class SyncService {
       return { skipped: true, reason: "此账号已同步" };
 
     const config = SettingsService.read(context);
-    const recordId = crypto.randomUUID();
+    const recordId = tokenDigest(
+      JSON.stringify([scope, item.ratingKey, accountId]),
+    );
 
     const base = {
       id: recordId,
@@ -293,7 +295,7 @@ export abstract class SyncService {
               createdAt: Date.now(),
             });
 
-          insertSyncRecord(context.database, {
+          saveSyncRecord(context.database, {
             ...base,
             status: "success",
             subjectId: match.subjectId,
@@ -308,7 +310,7 @@ export abstract class SyncService {
       return { recordId, ...match, changed: result.changed };
     } catch (error) {
       if (error instanceof BlockedTitle) {
-        insertSyncRecord(context.database, {
+        saveSyncRecord(context.database, {
           ...base,
           status: "ignored",
           message: error.message,
@@ -324,7 +326,7 @@ export abstract class SyncService {
         context.database,
         () => {
           SyncService.assertLease(context, job.id, owner);
-          insertSyncRecord(context.database, {
+          saveSyncRecord(context.database, {
             ...base,
             status: pending ? "pending" : "error",
             trace: pending ? error.trace : [],

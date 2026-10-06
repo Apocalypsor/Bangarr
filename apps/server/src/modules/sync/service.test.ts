@@ -240,6 +240,12 @@ test("matched targets survive a database reopen and replay without search", asyn
   expect(database.orm.select().from(watched).all()).toHaveLength(1);
   fail(false);
   disableSearch();
+  const failedRecord = database.orm
+    .select()
+    .from(records)
+    .all()
+    .find((record) => record.status === "error");
+  expect(failedRecord).toBeDefined();
 
   const reopened = openDatabase(database.path);
 
@@ -259,6 +265,12 @@ test("matched targets survive a database reopen and replay without search", asyn
       "succeeded",
     );
     expect(reopened.orm.select().from(watched).all()).toHaveLength(2);
+    const results = reopened.orm.select().from(records).all();
+    expect(results).toHaveLength(2);
+    expect(
+      results.find((record) => record.id === failedRecord?.id)?.status,
+    ).toBe("success");
+    expect(results.every((record) => record.status === "success")).toBe(true);
     expect(
       writes.filter((write) => write.path.endsWith("/episodes/101")),
     ).toHaveLength(2);
@@ -317,6 +329,13 @@ test("ambiguous match writes nothing until confirmed mapping retries the origina
 
   if (!candidate) throw new Error("missing candidate");
 
+  const originalIds = database.orm
+    .select()
+    .from(records)
+    .all()
+    .map((record) => record.id)
+    .sort();
+  expect(originalIds).toHaveLength(2);
   MatchingService.resolve(settings, candidate.id, 10);
   await SyncService.runOne(runner);
   await SyncService.runOne(runner);
@@ -324,4 +343,11 @@ test("ambiguous match writes nothing until confirmed mapping retries the origina
     writes.filter((write) => write.path.endsWith("/episodes/101")),
   ).toHaveLength(2);
   expect(MatchingService.candidates(settings)).toHaveLength(0);
+  const resolvedRecords = database.orm.select().from(records).all();
+  expect(resolvedRecords.map((record) => record.id).sort()).toEqual(
+    originalIds,
+  );
+  expect(resolvedRecords.every((record) => record.status === "success")).toBe(
+    true,
+  );
 });
