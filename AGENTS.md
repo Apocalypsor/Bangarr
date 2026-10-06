@@ -38,6 +38,7 @@ Use these file roles inside each feature module; create only the files the featu
 - Keep individual React providers in `src/providers`, composed in `main.tsx`; authentication is a provider too. Queries belong in `src/hooks`, named `useSettingsQuery` and similar.
 - Routes compose pages; domain forms belong in frontend modules. Reuse shadcn components and the persistent client-side layout. Do not add a parallel `pages/` directory.
 - Background refreshes must preserve form drafts, focus, selection and scroll. Update only affected query data after mutations.
+- UI copy should be concise and user-facing. Keep default credentials and deployment details in README; do not put implementation notes, raw diagnostic JSON, or conversational explanations in pages. Retain necessary input guidance, meaningful errors and action consequences.
 
 ## Correctness and verification
 

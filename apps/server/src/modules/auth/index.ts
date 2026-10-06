@@ -1,4 +1,4 @@
-import { loginSchema } from "@server/modules/auth/model";
+import { accountUpdateSchema, loginSchema } from "@server/modules/auth/model";
 import { AuthService } from "@server/modules/auth/service";
 import type { LoginAttempt } from "@server/modules/auth/types";
 import { originGuard } from "@server/plugins/auth";
@@ -21,29 +21,8 @@ export const authRoutes = (context: AppContext) => {
     .use(originGuard(context.publicOrigin))
 
     .get("/status", ({ cookie }) => ({
-      needsSetup: AuthService.needsSetup(context),
       user: AuthService.session(context, String(cookie.session?.value ?? "")),
     }))
-
-    .post(
-      "/setup",
-      async ({ body, cookie }) => {
-        const session = await AuthService.setup(
-          context,
-          body.username.trim(),
-          body.password,
-        );
-
-        cookie.session?.set({
-          ...cookieOptions,
-          value: session.token,
-          expires: new Date(session.expiresAt),
-        });
-
-        return { ok: true };
-      },
-      { body: loginSchema },
-    )
 
     .post(
       "/login",
@@ -66,6 +45,26 @@ export const authRoutes = (context: AppContext) => {
         return { ok: true };
       },
       { body: loginSchema },
+    )
+
+    .put(
+      "/account",
+      async ({ body, cookie }) => {
+        const session = await AuthService.updateAccount(
+          context,
+          String(cookie.session?.value ?? ""),
+          body,
+        );
+
+        cookie.session?.set({
+          ...cookieOptions,
+          value: session.token,
+          expires: new Date(session.expiresAt),
+        });
+
+        return { ok: true };
+      },
+      { body: accountUpdateSchema },
     )
 
     .post(

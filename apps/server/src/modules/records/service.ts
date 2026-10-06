@@ -31,17 +31,13 @@ export abstract class RecordsService {
     const record = RecordsService.get(context, id);
 
     if (record.status === "success")
-      throw new AppError(
-        409,
-        "RECORD_SUCCEEDED",
-        "此记录已经成功，请通过 Plex 全量核对重新检查",
-      );
+      throw new AppError(409, "RECORD_SUCCEEDED", "此记录已同步成功");
 
     if (!record.jobId || !JobsService.get(context, record.jobId))
       throw new AppError(
         409,
         "RECORD_JOB_MISSING",
-        "此历史记录没有原始任务，请通过 Plex 扫描重新核对",
+        "无法重试此记录，请重新扫描 Plex",
       );
 
     const job = JobsService.get(context, record.jobId);

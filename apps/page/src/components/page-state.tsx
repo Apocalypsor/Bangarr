@@ -11,7 +11,7 @@ import { AlertCircle, Inbox } from "lucide-react";
 
 interface EmptyStateProps {
   title?: string;
-  description: string;
+  description?: string;
 }
 
 export const ErrorState = ({ error }: { error: Error }) => (
@@ -39,7 +39,7 @@ export const EmptyState = ({
         <Inbox />
       </EmptyMedia>
       <EmptyTitle>{title}</EmptyTitle>
-      <EmptyDescription>{description}</EmptyDescription>
+      {description && <EmptyDescription>{description}</EmptyDescription>}
     </EmptyHeader>
   </Empty>
 );

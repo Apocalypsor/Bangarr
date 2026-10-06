@@ -1,5 +1,4 @@
 import type { AppDatabase } from "@server/db/client";
-import { AuthService } from "@server/modules/auth/service";
 import { CatalogService } from "@server/modules/catalog/service";
 import { JobsService } from "@server/modules/jobs/service";
 import { SettingsService } from "@server/modules/settings/service";
@@ -19,8 +18,6 @@ export const startTasks = (database: AppDatabase, vault: SecretVault) => {
   let stopping = false;
 
   const refreshRuntime = () => {
-    if (AuthService.needsSetup(context)) return;
-
     const config = SettingsService.read(context);
 
     const key = JSON.stringify([

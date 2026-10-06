@@ -1,5 +1,6 @@
 import { accountRoutes } from "@server/modules/accounts";
 import { authRoutes } from "@server/modules/auth";
+import { AuthService } from "@server/modules/auth/service";
 import { catalogRoutes } from "@server/modules/catalog";
 import { jobsRoutes } from "@server/modules/jobs";
 import { matchingRoutes } from "@server/modules/matching";
@@ -12,6 +13,8 @@ import type { HttpTransport } from "@server/utils/http";
 import { Elysia } from "elysia";
 
 export const createApp = (options: AppContext) => {
+  AuthService.initialize(options);
+
   const transport: HttpTransport = (request) =>
     (options.transport ?? fetch)(
       options.shutdownSignal

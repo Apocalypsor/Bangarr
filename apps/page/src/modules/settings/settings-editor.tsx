@@ -4,6 +4,7 @@ import type { PublicSettings, Settings } from "@page/hooks/use-settings-query";
 import { api, unwrap } from "@page/lib/api";
 import { PlexSettings } from "@page/modules/plex/plex-settings";
 import { GeneralSettings } from "@page/modules/settings/general-settings";
+import { TitleIndex } from "@page/modules/settings/title-index";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -77,24 +78,9 @@ export const SettingsEditor = ({ initial, plexOnly }: SettingsEditorProps) => {
     <div className="flex flex-col gap-6">
       <UnsavedChanges dirty={dirty} />
 
-      <header className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-semibold tracking-tight">
-            {plexOnly ? "Plex" : "设置"}
-          </h1>
-          <p className="mt-2 text-muted-foreground">
-            {plexOnly
-              ? "连接媒体服务器，自动同步手动标记和历史已看。"
-              : "调整匹配策略和后台任务。"}
-          </p>
-        </div>
-        <Button
-          disabled={!dirty || save.isPending}
-          onClick={() => save.mutate(draft)}
-        >
-          {save.isPending ? "保存中…" : "保存配置"}
-        </Button>
-      </header>
+      <h1 className="text-3xl font-semibold tracking-tight">
+        {plexOnly ? "Plex" : "同步设置"}
+      </h1>
 
       {plexOnly ? (
         <PlexSettings
@@ -104,8 +90,20 @@ export const SettingsEditor = ({ initial, plexOnly }: SettingsEditorProps) => {
           tokenConfigured={initial.plex.tokenConfigured}
         />
       ) : (
-        <GeneralSettings draft={draft} update={update} />
+        <>
+          <GeneralSettings draft={draft} update={update} />
+          <TitleIndex />
+        </>
       )}
+
+      <div className="flex justify-start">
+        <Button
+          disabled={!dirty || save.isPending}
+          onClick={() => save.mutate(draft)}
+        >
+          {save.isPending ? "保存中…" : "保存配置"}
+        </Button>
+      </div>
     </div>
   );
 };

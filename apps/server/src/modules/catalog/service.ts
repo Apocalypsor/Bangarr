@@ -14,10 +14,14 @@ import type { AppContext } from "@server/types";
 import { AppError, RemoteError } from "@server/utils/errors";
 
 export abstract class CatalogService {
-  static async refreshData(context: AppContext) {
+  static async refreshData(
+    context: AppContext,
+    report: (message: string) => void = () => {},
+  ) {
     const store = new CatalogStore(context.database.path);
     const config = SettingsService.read(context);
 
+    report("正在下载标题索引");
     const response = await CatalogService.downloadResponse(
       context,
       config.bangumi.dataUrl,
@@ -41,39 +45,48 @@ export abstract class CatalogService {
     let count = 0;
 
     try {
-      db.transaction(() => {
-        for (const item of document.items) {
-          const id = Number(
-            item.sites?.find((site) => site.site === "bangumi")?.id,
-          );
+      for (let offset = 0; offset < document.items.length; offset += 500) {
+        report(`正在建立索引 ${offset} / ${document.items.length}`);
+        await Bun.sleep(0);
+        db.transaction(() => {
+          for (const item of document.items.slice(offset, offset + 500)) {
+            const id = Number(
+              item.sites?.find((site) => site.site === "bangumi")?.id,
+            );
 
-          if (!Number.isInteger(id) || id <= 0 || !item.title) continue;
+            if (!Number.isInteger(id) || id <= 0 || !item.title) continue;
 
-          const translations = Object.values(item.titleTranslate ?? {}).flat();
+            const translations = Object.values(
+              item.titleTranslate ?? {},
+            ).flat();
 
-          insertSubject(db, {
-            id,
-            name: item.title,
-            name_cn: item.titleTranslate?.["zh-Hans"]?.[0] ?? "",
-            aliases: translations,
-            type: 2,
-            platform:
-              (
-                { tv: "TV", web: "WEB", ova: "OVA", movie: "剧场版" } as Record<
-                  string,
-                  string
-                >
-              )[item.type ?? ""] ?? "",
-            date: item.begin?.slice(0, 10) ?? "",
-            source: "data",
-          });
-          count++;
-        }
-      })();
+            insertSubject(db, {
+              id,
+              name: item.title,
+              name_cn: item.titleTranslate?.["zh-Hans"]?.[0] ?? "",
+              aliases: translations,
+              type: 2,
+              platform:
+                (
+                  {
+                    tv: "TV",
+                    web: "WEB",
+                    ova: "OVA",
+                    movie: "剧场版",
+                  } as Record<string, string>
+                )[item.type ?? ""] ?? "",
+              date: item.begin?.slice(0, 10) ?? "",
+              source: "data",
+            });
+            count++;
+          }
+        })();
+      }
 
       if (!count)
         throw new AppError(502, "CATALOG_EMPTY", "数据集为空，保留已有数据");
 
+      report("正在保存标题索引");
       finalizeCatalog(db);
       db.close();
       renameSync(temporary, store.path());

@@ -25,17 +25,15 @@ export const UnsavedChanges = ({ dirty }: { dirty: boolean }) => {
     >
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>离开前保存配置？</DialogTitle>
-          <DialogDescription>
-            当前修改尚未保存。继续编辑可以保留草稿，放弃修改会返回已保存的配置。
-          </DialogDescription>
+          <DialogTitle>放弃未保存的修改？</DialogTitle>
+          <DialogDescription>离开后，未保存的修改将丢失。</DialogDescription>
         </DialogHeader>
         <DialogFooter>
           <Button variant="outline" onClick={() => blocker.reset?.()}>
             继续编辑
           </Button>
           <Button variant="destructive" onClick={() => blocker.proceed?.()}>
-            放弃修改并离开
+            放弃修改
           </Button>
         </DialogFooter>
       </DialogContent>

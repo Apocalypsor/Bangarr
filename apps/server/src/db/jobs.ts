@@ -1,6 +1,7 @@
 import type { AppDatabase } from "@server/db/client";
-import { jobs } from "@server/db/schema";
-import { and, desc, eq, gt, inArray } from "drizzle-orm";
+import { accounts, candidates, jobs } from "@server/db/schema";
+import type { JobsQuery } from "@server/modules/jobs/model";
+import { and, desc, eq, gt, inArray, sql } from "drizzle-orm";
 
 export const findActiveJob = (database: AppDatabase, dedupeKey: string) =>
   database.orm
@@ -157,21 +158,71 @@ export const listJobs = (
     .offset(offset)
     .all();
 
-export const listBackgroundStatus = (database: AppDatabase) =>
-  ["plex-scan", "catalog-data"].flatMap((kind) => {
-    const job = database.orm
+export const listTaskPage = (database: AppDatabase, filter: JobsQuery) => {
+  const where = and(
+    filter.state ? eq(jobs.state, filter.state) : undefined,
+    filter.kind ? eq(jobs.kind, filter.kind) : undefined,
+  );
+  const limit = filter.limit ?? 30;
+  const offset = filter.offset ?? 0;
+
+  return database.sqlite.transaction(() => ({
+    items: database.orm
       .select({
         id: jobs.id,
         kind: jobs.kind,
         state: jobs.state,
+        attempt: jobs.attempt,
+        maxAttempts: jobs.maxAttempts,
         lastError: jobs.lastError,
+        result: jobs.result,
+        availableAt: jobs.availableAt,
+        createdAt: jobs.createdAt,
         updatedAt: jobs.updatedAt,
+        title: sql<
+          string | null
+        >`json_extract(${jobs.payload}, '$.item.title')`,
+        season: sql<
+          number | null
+        >`json_extract(${jobs.payload}, '$.item.season')`,
+        episode: sql<
+          number | null
+        >`json_extract(${jobs.payload}, '$.item.episode')`,
+        userName: sql<
+          string | null
+        >`json_extract(${jobs.payload}, '$.userName')`,
+        accountName: accounts.username,
+        needsConfirmation:
+          sql<boolean>`exists(select 1 from ${candidates} where ${candidates.jobId} = ${jobs.id} and ${candidates.state} = 'pending')`.mapWith(
+            Boolean,
+          ),
       })
       .from(jobs)
-      .where(eq(jobs.kind, kind))
-      .orderBy(desc(jobs.createdAt), desc(jobs.id))
-      .limit(1)
-      .get();
-
-    return job ? [job] : [];
-  });
+      .leftJoin(
+        accounts,
+        eq(accounts.id, sql`json_extract(${jobs.payload}, '$.accountId')`),
+      )
+      .where(where)
+      .orderBy(
+        sql`case ${jobs.state} when 'running' then 0 when 'pending' then 1 else 2 end`,
+        desc(jobs.createdAt),
+        desc(jobs.id),
+      )
+      .limit(limit)
+      .offset(offset)
+      .all(),
+    total:
+      database.orm
+        .select({ count: sql<number>`count(*)` })
+        .from(jobs)
+        .where(where)
+        .get()?.count ?? 0,
+    counts: database.orm
+      .select({ state: jobs.state, count: sql<number>`count(*)` })
+      .from(jobs)
+      .groupBy(jobs.state)
+      .all(),
+    limit,
+    offset,
+  }))();
+};

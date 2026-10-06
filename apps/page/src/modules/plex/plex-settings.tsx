@@ -3,7 +3,6 @@ import { Button } from "@page/components/ui/button";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@page/components/ui/card";
@@ -42,8 +41,7 @@ export const PlexSettings = ({
   const scan = useMutation({
     mutationFn: async (full: boolean) =>
       unwrap(await api.api.plex.scan.post({ full })),
-    onSuccess: () =>
-      toast.success("扫描已加入队列，进度见下方，结果见同步记录"),
+    onSuccess: () => toast.success("已安排同步"),
     onError: (error) => toast.error(error.message),
   });
 
@@ -52,15 +50,12 @@ export const PlexSettings = ({
       <Card>
         <CardHeader>
           <CardTitle>媒体服务器</CardTitle>
-          <CardDescription>
-            Token 决定读取哪个 Plex 用户的观看状态。
-          </CardDescription>
         </CardHeader>
 
         <CardContent>
           <FieldGroup>
             <Field orientation="horizontal">
-              <FieldLabel htmlFor="plex-enabled">启用主动同步</FieldLabel>
+              <FieldLabel htmlFor="plex-enabled">定时同步</FieldLabel>
               <Switch
                 id="plex-enabled"
                 checked={draft.plex.enabled}
@@ -100,9 +95,7 @@ export const PlexSettings = ({
                 value={draft.plex.userName}
                 onChange={(e) => update("plex", { userName: e.target.value })}
               />
-              <FieldDescription>
-                必须与 Bangumi 账号绑定的用户名一致。
-              </FieldDescription>
+              <FieldDescription>填写 Token 所属的 Plex 用户名</FieldDescription>
             </Field>
 
             <Field>
@@ -113,7 +106,7 @@ export const PlexSettings = ({
                 onChange={(e) => update("plex", { cron: e.target.value })}
               />
               <FieldDescription>
-                默认每 15 分钟扫描。只同步已看，不撤销 Bangumi 进度。
+                例如 */15 * * * * 表示每 15 分钟
               </FieldDescription>
             </Field>
 
@@ -129,7 +122,7 @@ export const PlexSettings = ({
                 }
               />
               <FieldDescription>
-                留空读取所有电影与剧集库，也可以从下面的连接结果中选择。
+                多个 ID 用逗号分隔，留空选择全部
               </FieldDescription>
             </Field>
 
@@ -140,7 +133,7 @@ export const PlexSettings = ({
                 disabled={dirty || inspect.isFetching}
                 onClick={() => void inspect.refetch()}
               >
-                {inspect.isFetching ? "连接中…" : "测试连接 / 获取媒体库"}
+                {inspect.isFetching ? "连接中…" : "测试连接"}
               </Button>
               <Button
                 type="button"
@@ -159,9 +152,7 @@ export const PlexSettings = ({
               </Button>
             </div>
             {dirty ? (
-              <p className="text-sm text-muted-foreground">
-                请先保存配置，再测试连接或开始同步。
-              </p>
+              <p className="text-sm text-muted-foreground">请先保存修改</p>
             ) : null}
             {inspect.error ? <ErrorState error={inspect.error} /> : null}
             {inspect.data ? (
@@ -198,9 +189,6 @@ export const PlexSettings = ({
       <Card>
         <CardHeader>
           <CardTitle>Plex Webhook</CardTitle>
-          <CardDescription>
-            播放事件即时同步，定时扫描负责补漏。
-          </CardDescription>
         </CardHeader>
 
         <CardContent>

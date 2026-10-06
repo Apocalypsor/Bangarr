@@ -3,7 +3,6 @@ import { Button } from "@page/components/ui/button";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@page/components/ui/card";
@@ -17,7 +16,7 @@ import { type ReactNode, useState } from "react";
 export const AuthGate = ({ children }: { children: ReactNode }) => {
   const { session, login } = useAuth();
 
-  const [username, setUsername] = useState("");
+  const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
 
   if (session.isPending)
@@ -35,14 +34,7 @@ export const AuthGate = ({ children }: { children: ReactNode }) => {
       <Card className="w-full max-w-md">
         <CardHeader>
           <LockKeyhole className="mb-3 size-8 text-primary" />
-          <CardTitle>
-            {session.data?.needsSetup ? "欢迎使用 Bangarr" : "登录 Bangarr"}
-          </CardTitle>
-          <CardDescription>
-            {session.data?.needsSetup
-              ? "创建管理员账号，开始连接 Plex 与 Bangumi。"
-              : "登录以管理观看进度与同步任务。"}
-          </CardDescription>
+          <CardTitle>登录 Bangarr</CardTitle>
         </CardHeader>
 
         <CardContent>
@@ -72,21 +64,12 @@ export const AuthGate = ({ children }: { children: ReactNode }) => {
                 <Input
                   id="password"
                   type="password"
-                  autoComplete={
-                    session.data?.needsSetup
-                      ? "new-password"
-                      : "current-password"
-                  }
-                  minLength={12}
+                  autoComplete="current-password"
+                  minLength={1}
                   required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                 />
-                {session.data?.needsSetup ? (
-                  <p className="text-sm text-muted-foreground">
-                    至少 12 个字符。请妥善保管管理员密码。
-                  </p>
-                ) : null}
               </Field>
 
               {login.error || session.error ? (
@@ -100,11 +83,7 @@ export const AuthGate = ({ children }: { children: ReactNode }) => {
                 type="submit"
                 disabled={login.isPending || Boolean(session.error)}
               >
-                {login.isPending
-                  ? "正在验证…"
-                  : session.data?.needsSetup
-                    ? "创建管理员"
-                    : "登录"}
+                {login.isPending ? "正在验证…" : "登录"}
               </Button>
               {session.error && (
                 <Button

@@ -29,16 +29,17 @@ const useAuthState = () => {
   const session = useSessionQuery();
 
   const login = useMutation({
-    mutationFn: async (credentials: Credentials) => {
-      const endpoint = session.data?.needsSetup
-        ? api.api.auth.setup
-        : api.api.auth.login;
+    mutationFn: async (credentials: Credentials) =>
+      unwrap(await api.api.auth.login.post(credentials)),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["session"] }),
+  });
 
-      return unwrap(await endpoint.post(credentials));
-    },
+  const updateAccount = useMutation({
+    mutationFn: async (input: Parameters<typeof api.api.auth.account.put>[0]) =>
+      unwrap(await api.api.auth.account.put(input)),
     onSuccess: () => {
-      client.clear();
       void client.invalidateQueries({ queryKey: ["session"] });
+      toast.success("账号已更新");
     },
   });
 
@@ -51,5 +52,5 @@ const useAuthState = () => {
     onError: (error) => toast.error(error.message),
   });
 
-  return { session, login, logout };
+  return { session, login, logout, updateAccount };
 };

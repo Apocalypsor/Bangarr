@@ -9,13 +9,15 @@ import {
   getJob,
   incrementJobAttempt,
   insertJob,
-  listBackgroundStatus,
   listJobs,
+  listTaskPage,
   recoverExpiredJobs,
   renewJobLease,
   updateJobFailure,
 } from "@server/db/jobs";
+import type { JobsQuery } from "@server/modules/jobs/model";
 import type { EnqueueInput, Job } from "@server/modules/jobs/types";
+import { taskProgress } from "@server/modules/jobs/utils";
 import type { AppContext } from "@server/types";
 import { AppError } from "@server/utils/errors";
 
@@ -72,6 +74,8 @@ export abstract class JobsService {
 
         const job = assignJobLease(context.database, row.id, {
           state: "running",
+          result: null,
+          lastError: null,
           leaseOwner: owner,
           leaseUntil: now + leaseMs,
           updatedAt: now,
@@ -121,7 +125,7 @@ export abstract class JobsService {
     );
 
     if (!row)
-      throw new AppError(409, "JOB_LEASE_LOST", "任务租约已失效，停止执行");
+      throw new AppError(409, "JOB_LEASE_LOST", "任务已中断，请重新同步");
   }
 
   static complete(
@@ -224,8 +228,42 @@ export abstract class JobsService {
     return getJob(context.database, id);
   }
 
-  static backgroundStatus(context: Pick<AppContext, "database" | "now">) {
-    return listBackgroundStatus(context.database);
+  static page(context: Pick<AppContext, "database">, filter: JobsQuery = {}) {
+    const page = listTaskPage(context.database, filter);
+    const counts = {
+      pending: 0,
+      running: 0,
+      succeeded: 0,
+      failed: 0,
+      cancelled: 0,
+    };
+    for (const row of page.counts) counts[row.state] = row.count;
+
+    return {
+      ...page,
+      counts,
+      items: page.items.map(({ result, ...job }) => ({
+        ...job,
+        progress: taskProgress(job.kind, job.state, result),
+      })),
+    };
+  }
+
+  static reportProgress(
+    context: Pick<AppContext, "database" | "now">,
+    id: string,
+    owner: string,
+    progress: string,
+  ) {
+    const now = (context.now ?? Date.now)();
+    if (
+      !checkpointJob(context.database, id, owner, now, {
+        result: { progress },
+        updatedAt: now,
+      })
+    ) {
+      throw new AppError(409, "JOB_LEASE_LOST", "任务已中断，请重新同步");
+    }
   }
 
   static list(

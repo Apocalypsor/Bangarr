@@ -34,11 +34,11 @@ const request = (
     body: body ? JSON.stringify(body) : undefined,
   });
 
-const credentials = { username: "admin", password: "a-strong-test-password" };
+const credentials = { username: "admin", password: "admin" };
 
 const login = async (app: ReturnType<typeof createApp>) => {
   const response = await app.handle(
-    request("/auth/setup", "POST", credentials),
+    request("/auth/login", "POST", credentials),
   );
 
   expect(response.status).toBe(200);
@@ -56,7 +56,7 @@ describe("management authentication", () => {
     const response = await app.handle(request("/auth/status"));
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ needsSetup: true });
+    expect(await response.json()).toMatchObject({ user: null });
     expect((await app.handle(request("/auth/logout", "POST"))).status).toBe(
       401,
     );
@@ -114,13 +114,13 @@ describe("management authentication", () => {
       resolveSeries: true,
     });
   });
-  test("empty configured public origin uses the request origin for same-site setup", async () => {
+  test("empty configured public origin uses the request origin for same-site login", async () => {
     const context = fixture();
     const app = createApp({ ...context, publicOrigin: "" });
 
     const response = await app.handle(
       request(
-        "/auth/setup",
+        "/auth/login",
         "POST",
         credentials,
         undefined,
@@ -148,10 +148,10 @@ describe("management authentication", () => {
 
     expect((await app.handle(request("/health"))).status).toBe(200);
   });
-  test("setup once, password hashed, cookie session persists, logout revokes", async () => {
+  test("default account is hashed, sessions persist and logout revokes", async () => {
     const { app, database } = fixture();
     const response = await app.handle(
-      request("/auth/setup", "POST", credentials),
+      request("/auth/login", "POST", credentials),
     );
     const cookie = response.headers.get("set-cookie")?.split(";")[0] ?? "";
 
@@ -161,7 +161,7 @@ describe("management authentication", () => {
     );
     expect(
       (await app.handle(request("/auth/setup", "POST", credentials))).status,
-    ).toBe(409);
+    ).toBe(404);
 
     const row = database.sqlite
       .query<
@@ -194,14 +194,14 @@ describe("management authentication", () => {
       (await app.handle(request("/settings", "GET", undefined, cookie))).status,
     ).toBe(401);
   });
-  test("cross-origin writes and concurrent setup are rejected", async () => {
+  test("cross-origin login is rejected", async () => {
     const { app } = fixture();
 
     expect(
       (
         await app.handle(
           request(
-            "/auth/setup",
+            "/auth/login",
             "POST",
             credentials,
             undefined,
@@ -211,12 +211,10 @@ describe("management authentication", () => {
       ).status,
     ).toBe(403);
 
-    const result = await Promise.all([
-      app.handle(request("/auth/setup", "POST", credentials)),
-      app.handle(request("/auth/setup", "POST", credentials)),
-    ]);
-
-    expect(result.map((r) => r.status).sort()).toEqual([200, 409]);
+    const before = app;
+    expect(
+      (await before.handle(request("/auth/login", "POST", credentials))).status,
+    ).toBe(200);
   });
   test("failed login rate limit cannot be bypassed by request headers", async () => {
     const { app } = fixture();
@@ -375,6 +373,7 @@ test("core management writes require a session and reject cross-origin requests"
     ["/catalog/update", "POST", undefined],
     ["/plex/scan", "POST", { full: false }],
     ["/jobs/id/retry", "POST", undefined],
+    ["/jobs/id/cancel", "POST", undefined],
     ["/records/id/retry", "POST", undefined],
     ["/accounts", "POST", account],
     ["/accounts/id", "PUT", account],
@@ -411,4 +410,180 @@ test("removed feature endpoints are unavailable even to the administrator", asyn
     expect(
       (await app.handle(request(path, "GET", undefined, cookie))).status,
     ).toBe(404);
+});
+
+test("administrator changes require session, same origin, current password and a valid new password", async () => {
+  const { app } = fixture();
+  const body = {
+    username: "owner",
+    currentPassword: "admin",
+    newPassword: "new-strong-password",
+  };
+
+  expect((await app.handle(request("/auth/account", "PUT", body))).status).toBe(
+    401,
+  );
+  const cookie = await login(app);
+  expect(
+    (
+      await app.handle(
+        request("/auth/account", "PUT", body, cookie, "https://evil.test"),
+      )
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await app.handle(
+        request(
+          "/auth/account",
+          "PUT",
+          { ...body, currentPassword: "wrong" },
+          cookie,
+        ),
+      )
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await app.handle(
+        request(
+          "/auth/account",
+          "PUT",
+          { ...body, newPassword: "admin" },
+          cookie,
+        ),
+      )
+    ).status,
+  ).toBe(400);
+  expect(
+    (
+      await app.handle(
+        request("/auth/account", "PUT", { ...body, username: "   " }, cookie),
+      )
+    ).status,
+  ).toBe(400);
+  expect(
+    (await app.handle(request("/auth/login", "POST", credentials))).status,
+  ).toBe(200);
+});
+
+test("changing the administrator rotates sessions and reopening the database never resets credentials", async () => {
+  const context = fixture();
+  const { app, database, vault } = context;
+  const firstCookie = await login(app);
+  const secondCookie = await login(app);
+  const body = {
+    username: " owner ",
+    currentPassword: "admin",
+    newPassword: "new-strong-password",
+  };
+
+  const response = await app.handle(
+    request("/auth/account", "PUT", body, firstCookie),
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({ ok: true });
+  const currentCookie = response.headers.get("set-cookie")?.split(";")[0] ?? "";
+  expect(currentCookie).toBeTruthy();
+  expect(currentCookie).not.toBe(firstCookie);
+
+  for (const cookie of [firstCookie, secondCookie]) {
+    expect(
+      (await app.handle(request("/settings", "GET", undefined, cookie))).status,
+    ).toBe(401);
+  }
+  const status = await app.handle(
+    request("/auth/status", "GET", undefined, currentCookie),
+  );
+  expect(await status.json()).toMatchObject({ user: { username: "owner" } });
+  expect(
+    (await app.handle(request("/settings", "GET", undefined, currentCookie)))
+      .status,
+  ).toBe(200);
+
+  const { openDatabase } = await import("@server/db/client");
+  const reopened = openDatabase(database.path);
+  try {
+    const restarted = createApp({ database: reopened, vault });
+    expect(
+      (await restarted.handle(request("/auth/login", "POST", credentials)))
+        .status,
+    ).toBe(401);
+    expect(
+      (
+        await restarted.handle(
+          request("/auth/login", "POST", {
+            username: "owner",
+            password: body.newPassword,
+          }),
+        )
+      ).status,
+    ).toBe(200);
+    const saved = reopened.sqlite
+      .query<{ username: string; password_hash: string }, []>(
+        "SELECT username,password_hash FROM admins",
+      )
+      .all();
+    expect(saved).toHaveLength(1);
+    expect(saved[0]?.username).toBe("owner");
+    expect(saved[0]?.password_hash).not.toContain(body.newPassword);
+  } finally {
+    reopened.close();
+  }
+});
+
+test("task page validates filters and cancellation affects only pending tasks", async () => {
+  const { app, database } = fixture();
+  const { JobsService } = await import("@server/modules/jobs/service");
+  const context = { database };
+  const first = JobsService.enqueue(context, {
+    kind: "sync",
+    dedupeKey: "first",
+    payload: {
+      item: { title: "测试作品", season: 1, episode: 2 },
+      secret: "private-payload",
+    },
+  });
+  const second = JobsService.enqueue(context, {
+    kind: "plex-scan",
+    dedupeKey: "second",
+    payload: {},
+  });
+  const cookie = await login(app);
+
+  const response = await app.handle(
+    request("/jobs?kind=sync&limit=1", "GET", undefined, cookie),
+  );
+  expect(response.status).toBe(200);
+  const page = (await response.json()) as {
+    total: number;
+    items: { title: string }[];
+  };
+  expect(page.total).toBe(1);
+  expect(page.items[0]?.title).toBe("测试作品");
+  expect(JSON.stringify(page)).not.toContain("private-payload");
+  expect(
+    (await app.handle(request("/jobs?limit=1.5", "GET", undefined, cookie)))
+      .status,
+  ).toBe(400);
+  expect(
+    (await app.handle(request("/jobs?kind=invalid", "GET", undefined, cookie)))
+      .status,
+  ).toBe(400);
+  expect(
+    (
+      await app.handle(
+        request(`/jobs/${first.job.id}/cancel`, "POST", undefined, cookie),
+      )
+    ).status,
+  ).toBe(200);
+  expect(JobsService.get(context, first.job.id)?.state).toBe("cancelled");
+  JobsService.claim(context, "worker");
+  expect(
+    (
+      await app.handle(
+        request(`/jobs/${second.job.id}/cancel`, "POST", undefined, cookie),
+      )
+    ).status,
+  ).toBe(409);
 });

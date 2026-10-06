@@ -115,9 +115,6 @@ export const AccountSettings = () => {
           <h1 className="text-3xl font-semibold tracking-tight">
             Bangumi 账号
           </h1>
-          <p className="mt-2 text-muted-foreground">
-            通过 Plex 用户名绑定观看记录的目标账号。
-          </p>
         </div>
         <Button onClick={() => edit(null)}>
           <Plus data-icon="inline-start" />
@@ -172,10 +169,7 @@ export const AccountSettings = () => {
           ))}
         </div>
       ) : (
-        <EmptyState
-          title="尚未连接 Bangumi"
-          description="添加账号 Token，并填写对应的 Plex 用户名。"
-        />
+        <EmptyState title="尚未连接 Bangumi" />
       )}
 
       <Dialog
@@ -209,9 +203,7 @@ export const AccountSettings = () => {
                     required={!editing}
                   />
                   <FieldDescription>
-                    {editing
-                      ? "留空保留当前 Token。"
-                      : "从 Bangumi 个人令牌页面获取，保存时会校验账号。"}
+                    {editing ? "留空保留当前 Token。" : "填写 Bangumi 个人令牌"}
                   </FieldDescription>
                 </Field>
 
@@ -223,9 +215,7 @@ export const AccountSettings = () => {
                     onChange={(e) => setUsers(e.target.value)}
                     required
                   />
-                  <FieldDescription>
-                    多个用户名用英文逗号分隔，按完整用户名匹配。
-                  </FieldDescription>
+                  <FieldDescription>多个用户名用逗号分隔</FieldDescription>
                 </Field>
 
                 <Field orientation="horizontal">

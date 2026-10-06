@@ -35,3 +35,23 @@ export const insertSession = (
   database: AppDatabase,
   value: typeof sessions.$inferInsert,
 ) => database.orm.insert(sessions).values(value).run();
+
+export const updateAdministrator = (
+  database: AppDatabase,
+  id: number,
+  previousPasswordHash: string,
+  changes: { username: string; passwordHash: string },
+) =>
+  database.orm
+    .update(admins)
+    .set(changes)
+    .where(
+      and(eq(admins.id, id), eq(admins.passwordHash, previousPasswordHash)),
+    )
+    .returning({ id: admins.id })
+    .get();
+
+export const deleteAdministratorSessions = (
+  database: AppDatabase,
+  adminId: number,
+) => database.orm.delete(sessions).where(eq(sessions.adminId, adminId)).run();

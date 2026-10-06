@@ -4,7 +4,6 @@ import { Button } from "@page/components/ui/button";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@page/components/ui/card";
@@ -99,9 +98,7 @@ export const MatchingPage = () => {
     onSuccess: () => {
       setOpen(false);
       refresh();
-      toast.success(
-        candidateId ? "候选已确认，已重新提交同步任务" : "映射已保存",
-      );
+      toast.success(candidateId ? "已确认匹配" : "映射已保存");
     },
     onError: (error) => toast.error(error.message),
   });
@@ -141,11 +138,7 @@ export const MatchingPage = () => {
     <div className="flex flex-col gap-6">
       <ConfirmAction
         open={Boolean(confirmation)}
-        title={
-          confirmation?.kind === "reject"
-            ? "拒绝匹配并屏蔽作品？"
-            : "删除映射？"
-        }
+        title={confirmation?.kind === "reject" ? "屏蔽此作品？" : "删除映射？"}
         description={
           confirmation?.kind === "reject"
             ? `「${confirmation.title}」会加入屏蔽词。`
@@ -165,9 +158,6 @@ export const MatchingPage = () => {
       <header className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">匹配与映射</h1>
-          <p className="mt-2 text-muted-foreground">
-            对不确定的结果人工确认，之后自动使用你的选择。
-          </p>
         </div>
         <Button onClick={add}>
           <Plus data-icon="inline-start" />
@@ -190,9 +180,6 @@ export const MatchingPage = () => {
             <Card>
               <CardHeader>
                 <CardTitle>需要确认的作品</CardTitle>
-                <CardDescription>
-                  确认后保存映射并重试。拒绝会把作品标题加入屏蔽词。
-                </CardDescription>
               </CardHeader>
 
               <CardContent>
@@ -240,7 +227,7 @@ export const MatchingPage = () => {
                                 })
                               }
                             >
-                              拒绝
+                              屏蔽作品
                             </Button>
                           </TableCell>
                         </TableRow>
@@ -248,7 +235,7 @@ export const MatchingPage = () => {
                     </TableBody>
                   </Table>
                 ) : (
-                  <EmptyState description="当前没有需要确认的匹配结果。" />
+                  <EmptyState title="暂无待确认的作品" />
                 )}
               </CardContent>
             </Card>
@@ -262,9 +249,6 @@ export const MatchingPage = () => {
             <Card>
               <CardHeader>
                 <CardTitle>自定义映射</CardTitle>
-                <CardDescription>
-                  同一标题和季度只使用一条映射，优先于自动匹配和屏蔽规则。
-                </CardDescription>
               </CardHeader>
 
               <CardContent>
@@ -338,7 +322,7 @@ export const MatchingPage = () => {
                     </TableBody>
                   </Table>
                 ) : (
-                  <EmptyState description="无需手动配置的作品会自动匹配。需要修正时，在这里添加标题与 Bangumi ID。" />
+                  <EmptyState title="暂无自定义映射" />
                 )}
               </CardContent>
             </Card>
@@ -404,16 +388,14 @@ export const MatchingPage = () => {
                     disabled={Boolean(candidateId)}
                     onChange={(event) => setSeason(Number(event.target.value))}
                   />
-                  <FieldDescription>
-                    -1 表示全部季度，0 表示特别篇；具体季度映射优先于全部季度。
-                  </FieldDescription>
+                  <FieldDescription>-1 为全部季度，0 为特别篇</FieldDescription>
                 </Field>
 
                 {!candidateId && (
                   <>
                     <Field orientation="horizontal">
                       <FieldLabel htmlFor="mapping-series">
-                        沿系列关系定位季度
+                        自动识别季度
                       </FieldLabel>
                       <Switch
                         id="mapping-series"
@@ -423,8 +405,7 @@ export const MatchingPage = () => {
                     </Field>
 
                     <FieldDescription>
-                      开启时填写系列起点的 Bangumi
-                      ID；关闭时按所填条目直接选集。
+                      开启时填写系列首部作品的 ID
                     </FieldDescription>
                   </>
                 )}
@@ -454,8 +435,7 @@ export const MatchingPage = () => {
                     }
                   />
                   <FieldDescription>
-                    Bangumi 集数 = Plex 集数 + 偏移。例如第 13 集对应 Bangumi 第
-                    1 集时填 -12。
+                    例如 Plex 第 13 集对应 Bangumi 第 1 集，填写 -12
                   </FieldDescription>
                 </Field>
 

@@ -138,14 +138,18 @@ test("only a live lease can checkpoint resolved targets or renew itself", () => 
 
   JobsService.checkpoint(queue, job.id, "a", { resolved });
   expect(JobsService.get(queue, job.id)?.payload).toEqual({ resolved });
-  expect(() => JobsService.checkpoint(queue, job.id, "b", {})).toThrow("租约");
+  expect(() => JobsService.checkpoint(queue, job.id, "b", {})).toThrow(
+    "任务已中断",
+  );
   advance(1001);
   expect(JobsService.heartbeat(queue, job.id, "a")).toBe(false);
-  expect(() => JobsService.checkpoint(queue, job.id, "a", {})).toThrow("租约");
+  expect(() => JobsService.checkpoint(queue, job.id, "a", {})).toThrow(
+    "任务已中断",
+  );
   expect(JobsService.claim(queue, "b")?.payload).toEqual({ resolved });
 });
 
-test("background status retains scan failures even after many sync jobs and exposes no payload", () => {
+test("task filters retain scan failures after many sync jobs and expose no payload", () => {
   const { queue, advance } = fixture();
 
   const scan = JobsService.enqueue(queue, {
@@ -165,19 +169,58 @@ test("background status retains scan failures even after many sync jobs and expo
       payload: {},
     });
 
-  expect(JobsService.backgroundStatus(queue)).toEqual([
-    {
-      id: scan.job.id,
-      kind: "plex-scan",
-      state: "failed",
-      lastError: "Plex 暂时无法连接",
-      updatedAt: 10000,
-    },
-  ]);
+  const failed = JobsService.page(queue, { state: "failed", limit: 1 });
+  expect(failed.total).toBe(1);
+  expect(failed.items[0]).toMatchObject({
+    id: scan.job.id,
+    kind: "plex-scan",
+    state: "failed",
+    lastError: "Plex 暂时无法连接",
+  });
+  expect(JSON.stringify(failed)).not.toContain("not-for-status");
+  expect(failed.counts.pending).toBe(110);
+  expect(
+    JobsService.page(queue, { kind: "sync", limit: 10, offset: 100 }).items,
+  ).toHaveLength(10);
+  expect(
+    JobsService.page(queue, { kind: "sync", limit: 10, offset: 110 }).items,
+  ).toHaveLength(0);
   advance(1);
 
   const retry = JobsService.retry(queue, scan.job.id);
+  const scans = JobsService.page(queue, { kind: "plex-scan" });
+  expect(scans.items[0]?.id).toBe(retry.job.id);
+  expect(scans.items[0]?.state).toBe("pending");
+});
 
-  expect(JobsService.backgroundStatus(queue)[0]?.id).toBe(retry.job.id);
-  expect(JobsService.backgroundStatus(queue)[0]?.state).toBe("pending");
+test("task progress persists and expired workers cannot overwrite it", () => {
+  const { queue, directory, advance } = fixture();
+  const task = JobsService.enqueue(queue, {
+    kind: "sync",
+    dedupeKey: "progress",
+    payload: { token: "not-public" },
+  });
+  JobsService.claim(queue, "first", 1000);
+  JobsService.reportProgress(queue, task.job.id, "first", "正在匹配作品与章节");
+
+  const reopened = openDatabase(join(directory, "test.sqlite"));
+  try {
+    const current = JobsService.page({ database: reopened }).items[0];
+    expect(current?.progress).toBe("正在匹配作品与章节");
+    expect(current).not.toHaveProperty("payload");
+    expect(current).not.toHaveProperty("result");
+    expect(current).not.toHaveProperty("leaseOwner");
+  } finally {
+    reopened.close();
+  }
+
+  advance(1001);
+  expect(() =>
+    JobsService.reportProgress(queue, task.job.id, "first", "旧进度"),
+  ).toThrow("任务已中断");
+  JobsService.claim(queue, "second");
+  expect(JobsService.page(queue).items[0]?.progress).toBe("");
+  JobsService.reportProgress(queue, task.job.id, "second", "正在同步观看进度");
+  JobsService.complete(queue, task.job.id, "second", { changed: true });
+  expect(JobsService.page(queue).items[0]?.progress).toBe("观看进度已同步");
 });

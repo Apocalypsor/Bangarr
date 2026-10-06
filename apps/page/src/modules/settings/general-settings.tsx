@@ -1,7 +1,6 @@
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@page/components/ui/card";
@@ -12,24 +11,90 @@ import {
   FieldLabel,
 } from "@page/components/ui/field";
 import { Input } from "@page/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@page/components/ui/select";
 import { Switch } from "@page/components/ui/switch";
 import { Textarea } from "@page/components/ui/textarea";
 import type { Settings, UpdateSettings } from "@page/hooks/use-settings-query";
+
+import { useMemo } from "react";
 
 interface Props {
   draft: Settings;
   update: UpdateSettings;
 }
 
+const representativeTimezones = [
+  "UTC",
+  "Asia/Shanghai",
+  "Asia/Tokyo",
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Los_Angeles",
+  "Pacific/Honolulu",
+  "America/Anchorage",
+  "America/Sao_Paulo",
+  "Europe/Paris",
+  "Europe/Athens",
+  "Europe/Moscow",
+  "Asia/Dubai",
+  "Asia/Karachi",
+  "Asia/Kolkata",
+  "Asia/Kathmandu",
+  "Asia/Dhaka",
+  "Asia/Yangon",
+  "Asia/Bangkok",
+  "Australia/Sydney",
+  "Australia/Adelaide",
+  "Australia/Darwin",
+  "Pacific/Auckland",
+  "Pacific/Chatham",
+  "Pacific/Tongatapu",
+  "Pacific/Kiritimati",
+  "Pacific/Noumea",
+  "Pacific/Pago_Pago",
+  "Pacific/Marquesas",
+  "America/St_Johns",
+  "America/Halifax",
+  "America/Noronha",
+  "Atlantic/Azores",
+  "Asia/Tehran",
+  "Asia/Kabul",
+] as const;
+
 export const GeneralSettings = ({ draft, update }: Props) => {
+  const timezones = useMemo(() => {
+    const now = new Date();
+
+    const byOffset = new Map<number, ReturnType<typeof timezoneOption>>();
+
+    for (const value of [
+      ...representativeTimezones,
+      ...Intl.supportedValuesOf("timeZone"),
+    ]) {
+      const option = timezoneOption(value, now);
+      if (!byOffset.has(option.offset)) byOffset.set(option.offset, option);
+    }
+
+    // Keep the saved region without adding a second option for its UTC offset.
+    const selected = timezoneOption(draft.scheduler.timezone, now);
+    byOffset.set(selected.offset, selected);
+
+    return [...byOffset.values()].sort((a, b) => a.offset - b.offset);
+  }, [draft.scheduler.timezone]);
+
   return (
     <>
       <Card>
         <CardHeader>
           <CardTitle>匹配与同步</CardTitle>
-          <CardDescription>
-            修改后用于后续任务，不会自动重写已有进度。
-          </CardDescription>
         </CardHeader>
 
         <CardContent>
@@ -97,9 +162,7 @@ export const GeneralSettings = ({ draft, update }: Props) => {
                   })
                 }
               />
-              <FieldDescription>
-                每行一个，自定义映射优先于屏蔽规则。
-              </FieldDescription>
+              <FieldDescription>每行一个关键词</FieldDescription>
             </Field>
           </FieldGroup>
         </CardContent>
@@ -107,20 +170,30 @@ export const GeneralSettings = ({ draft, update }: Props) => {
 
       <Card>
         <CardHeader>
-          <CardTitle>任务与数据源</CardTitle>
+          <CardTitle>同步与数据源</CardTitle>
         </CardHeader>
 
         <CardContent>
           <FieldGroup>
             <Field>
               <FieldLabel htmlFor="timezone">时区</FieldLabel>
-              <Input
-                id="timezone"
+              <Select
                 value={draft.scheduler.timezone}
-                onChange={(e) =>
-                  update("scheduler", { timezone: e.target.value })
-                }
-              />
+                onValueChange={(timezone) => update("scheduler", { timezone })}
+              >
+                <SelectTrigger id="timezone" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent position="popper" className="max-h-72">
+                  <SelectGroup>
+                    {timezones.map(({ value, label }) => (
+                      <SelectItem key={value} value={value} textValue={value}>
+                        {label}
+                      </SelectItem>
+                    ))}
+                  </SelectGroup>
+                </SelectContent>
+              </Select>
             </Field>
 
             <Field>
@@ -150,7 +223,7 @@ export const GeneralSettings = ({ draft, update }: Props) => {
             </Field>
 
             <Field orientation="horizontal">
-              <FieldLabel htmlFor="data-enabled">启用 bangumi-data</FieldLabel>
+              <FieldLabel htmlFor="data-enabled">使用标题索引</FieldLabel>
               <Switch
                 id="data-enabled"
                 checked={draft.bangumi.dataEnabled}
@@ -161,7 +234,7 @@ export const GeneralSettings = ({ draft, update }: Props) => {
             </Field>
 
             <Field>
-              <FieldLabel htmlFor="data-url">bangumi-data 地址</FieldLabel>
+              <FieldLabel htmlFor="data-url">标题索引地址</FieldLabel>
               <Input
                 id="data-url"
                 type="url"
@@ -186,14 +259,28 @@ export const GeneralSettings = ({ draft, update }: Props) => {
                   })
                 }
               />
-              <FieldDescription>
-                启用后首次自动导入，默认每 7
-                天更新；失败时保留旧索引并在稍后重试。
-              </FieldDescription>
             </Field>
           </FieldGroup>
         </CardContent>
       </Card>
     </>
   );
+};
+
+const timezoneOption = (value: string, date: Date) => {
+  const name =
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: value,
+      timeZoneName: "longOffset",
+    })
+      .formatToParts(date)
+      .find((part) => part.type === "timeZoneName")?.value ?? "GMT";
+
+  const match = /^GMT([+-])(\d{2}):(\d{2})$/.exec(name);
+  const offset = match
+    ? (Number(match[2]) * 60 + Number(match[3])) * (match[1] === "-" ? -1 : 1)
+    : 0;
+  const label = name === "GMT" ? "UTC+00:00" : name.replace("GMT", "UTC");
+
+  return { value, offset, label: `(${label}) ${value}` };
 };

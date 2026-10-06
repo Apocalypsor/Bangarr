@@ -56,7 +56,7 @@ export class NeedsConfirmation extends AppError {
 
 export class BlockedTitle extends AppError {
   constructor() {
-    super(400, "BLOCKED_TITLE", "作品命中屏蔽关键词");
+    super(400, "BLOCKED_TITLE", "作品已被屏蔽");
   }
 }
 
@@ -632,7 +632,11 @@ export abstract class MatchingService {
           const job = JobsService.get(context, candidate.jobId);
 
           if (!job)
-            throw new AppError(404, "JOB_NOT_FOUND", "原同步任务不存在");
+            throw new AppError(
+              404,
+              "JOB_NOT_FOUND",
+              "无法重试此匹配，请重新扫描 Plex",
+            );
 
           JobsService.enqueue(context, {
             kind: job.kind,

@@ -13,6 +13,7 @@ import {
   ArrowRightLeft,
   CheckCheck,
   ChevronRight,
+  ListTodo,
   LogOut,
   Menu,
   Moon,
@@ -24,6 +25,7 @@ import { useState } from "react";
 
 const navigation = [
   { to: "/", title: "同步记录", icon: CheckCheck },
+  { to: "/jobs", title: "任务", icon: ListTodo },
   { to: "/matching", title: "匹配与映射", icon: ArrowRightLeft },
   { to: "/settings", title: "设置", icon: Settings },
 ] as const;

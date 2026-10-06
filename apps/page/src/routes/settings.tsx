@@ -7,9 +7,8 @@ import {
 } from "@page/components/ui/tabs";
 import { useSettingsQuery } from "@page/hooks/use-settings-query";
 import { AccountSettings } from "@page/modules/accounts/account-settings";
-import { BackgroundStatus } from "@page/modules/settings/background-status";
+import { AdminSettings } from "@page/modules/auth/admin-settings";
 import { SettingsEditor } from "@page/modules/settings/settings-editor";
-import { TitleIndex } from "@page/modules/settings/title-index";
 
 export const SettingsPage = () => {
   const config = useSettingsQuery();
@@ -23,6 +22,7 @@ export const SettingsPage = () => {
         <TabsTrigger value="plex">Plex</TabsTrigger>
         <TabsTrigger value="accounts">Bangumi 账号</TabsTrigger>
         <TabsTrigger value="sync">同步设置</TabsTrigger>
+        <TabsTrigger value="admin">管理员</TabsTrigger>
       </TabsList>
       {config.error && <ErrorState error={config.error} />}
       <TabsContent
@@ -45,9 +45,14 @@ export const SettingsPage = () => {
         className="flex flex-col gap-6 data-[state=inactive]:hidden"
       >
         <SettingsEditor key="sync" initial={config.data} plexOnly={false} />
-        <TitleIndex />
       </TabsContent>
-      <BackgroundStatus />
+      <TabsContent
+        value="admin"
+        forceMount
+        className="data-[state=inactive]:hidden"
+      >
+        <AdminSettings />
+      </TabsContent>
     </Tabs>
   );
 };

@@ -48,10 +48,12 @@ export abstract class SyncService {
 
       switch (job.kind) {
         case "catalog-data":
-          result = await CatalogService.refreshData(context);
+          result = await CatalogService.refreshData(context, (message) =>
+            JobsService.reportProgress(context, job.id, owner, message),
+          );
           break;
         case "plex-scan":
-          result = await SyncService.scan(context, job);
+          result = await SyncService.scan(context, job, owner);
           break;
         case "sync":
           result = await SyncService.sync(context, job, owner);
@@ -83,7 +85,7 @@ export abstract class SyncService {
     }
   }
 
-  private static async scan(context: AppContext, job: Job) {
+  private static async scan(context: AppContext, job: Job, owner: string) {
     const config = SettingsService.read(context);
 
     if (!config.plex.enabled)
@@ -104,14 +106,19 @@ export abstract class SyncService {
       context.transport ?? fetch,
     );
 
+    JobsService.reportProgress(context, job.id, owner, "正在连接 Plex");
     const server = await client.identity();
     const scope = tokenDigest(
       JSON.stringify([server.id, config.plex.userName]),
     );
     let queued = 0;
     let skipped = 0;
+    let scanned = 0;
+    let lastProgress = 0;
+    JobsService.reportProgress(context, job.id, owner, "正在扫描媒体库");
 
     for await (const item of client.watched(config.plex.libraryIds)) {
+      scanned++;
       for (const account of targets) {
         if (
           !job.payload.full &&
@@ -141,6 +148,16 @@ export abstract class SyncService {
 
         if (result.created) queued++;
         else skipped++;
+      }
+
+      if (Date.now() - lastProgress >= 500) {
+        JobsService.reportProgress(
+          context,
+          job.id,
+          owner,
+          `已扫描 ${scanned} 项，新增 ${queued} 项，跳过 ${skipped} 项`,
+        );
+        lastProgress = Date.now();
       }
     }
 
@@ -184,6 +201,8 @@ export abstract class SyncService {
           "账号已停用或 Plex 用户绑定已变更",
         );
 
+      JobsService.reportProgress(context, job.id, owner, "正在匹配作品与章节");
+
       // 保存匹配结果，重试时沿用已确认的目标。
       const match =
         payload.resolved ??
@@ -202,6 +221,8 @@ export abstract class SyncService {
       const api = AccountService.client(context, accountId);
 
       SyncService.assertLease(context, job.id, owner);
+
+      JobsService.reportProgress(context, job.id, owner, "正在同步观看进度");
 
       const result =
         action === "watching"
@@ -298,7 +319,7 @@ export abstract class SyncService {
 
   private static assertLease(context: AppContext, id: string, owner: string) {
     if (!JobsService.heartbeat(context, id, owner))
-      throw new AppError(409, "JOB_LEASE_LOST", "任务租约已失效，停止执行");
+      throw new AppError(409, "JOB_LEASE_LOST", "任务已中断，请重新同步");
   }
 
   private static wasWatched(

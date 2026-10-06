@@ -65,7 +65,7 @@ export const RecordsPage = () => {
   const retry = useMutation({
     mutationFn: async (id: string) =>
       unwrap(await api.api.records({ id }).retry.post()),
-    onSuccess: () => toast.success("原始任务已重新入队，结果将写入新记录"),
+    onSuccess: () => toast.success("已安排重新同步"),
     onError: (error) => toast.error(error.message),
   });
 
@@ -73,9 +73,6 @@ export const RecordsPage = () => {
     <div className="flex flex-col gap-6">
       <header>
         <h1 className="text-3xl font-semibold tracking-tight">同步记录</h1>
-        <p className="mt-2 text-muted-foreground">
-          查看每次同步结果和匹配过程。
-        </p>
       </header>
 
       <form
@@ -236,7 +233,7 @@ export const RecordsPage = () => {
                 </TableBody>
               </Table>
             ) : (
-              <EmptyState description="还没有同步记录。连接账号后启动 Plex 扫描。" />
+              <EmptyState title="暂无同步记录" />
             )}
             <div className="mt-4 flex items-center justify-end gap-3">
               <Button
@@ -282,7 +279,7 @@ export const RecordsPage = () => {
               disabled={retry.isPending}
               onClick={() => retry.mutate(selected.id)}
             >
-              重试原始任务
+              重新同步
             </Button>
           )}
           {selected?.subjectId ? (
@@ -295,9 +292,6 @@ export const RecordsPage = () => {
               打开 Bangumi 条目
             </a>
           ) : null}
-          <pre className="overflow-auto rounded-md bg-muted p-4 text-xs">
-            {JSON.stringify(selected?.trace ?? [], null, 2)}
-          </pre>
         </DialogContent>
       </Dialog>
     </div>

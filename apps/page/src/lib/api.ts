@@ -24,7 +24,7 @@ export const unwrap = <T>(result: {
   }
 
   if (result.data === null || result.data === undefined)
-    throw new Error("服务器返回了空数据");
+    throw new Error("暂时无法获取数据，请重试");
 
   return result.data;
 };

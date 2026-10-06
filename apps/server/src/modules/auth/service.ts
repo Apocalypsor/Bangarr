@@ -1,4 +1,5 @@
 import {
+  deleteAdministratorSessions,
   deleteExpiredSessions,
   deleteSession,
   findAdministrator,
@@ -6,27 +7,20 @@ import {
   getSessionUser,
   insertAdministrator,
   insertSession,
+  updateAdministrator,
 } from "@server/db/auth";
 import { transaction } from "@server/db/client";
+import type { AccountUpdate } from "@server/modules/auth/model";
 import type { LoginAttempt } from "@server/modules/auth/types";
 import type { AppContext } from "@server/types";
 import { AppError } from "@server/utils/errors";
 import { randomToken, tokenDigest } from "@server/utils/secrets";
 
 export abstract class AuthService {
-  static needsSetup(context: Pick<AppContext, "database" | "now">) {
-    return !getAdministrator(context.database);
-  }
+  static initialize(context: Pick<AppContext, "database">) {
+    if (getAdministrator(context.database)) return;
 
-  static async setup(
-    context: Pick<AppContext, "database" | "now">,
-    username: string,
-    password: string,
-  ) {
-    if (!AuthService.needsSetup(context))
-      throw new AppError(409, "ALREADY_INITIALIZED", "管理员已设置，请登录");
-
-    const passwordHash = await Bun.password.hash(password, {
+    const passwordHash = Bun.password.hashSync("admin", {
       algorithm: "argon2id",
       memoryCost: 19456,
       timeCost: 2,
@@ -35,23 +29,66 @@ export abstract class AuthService {
     transaction(
       context.database,
       () => {
-        if (!AuthService.needsSetup(context))
-          throw new AppError(
-            409,
-            "ALREADY_INITIALIZED",
-            "管理员已设置，请登录",
-          );
-
-        insertAdministrator(context.database, {
-          id: 1,
-          username,
-          passwordHash,
-        });
+        if (!getAdministrator(context.database)) {
+          insertAdministrator(context.database, {
+            id: 1,
+            username: "admin",
+            passwordHash,
+          });
+        }
       },
       "immediate",
     );
+  }
 
-    return AuthService.newSession(context, 1);
+  static async updateAccount(
+    context: Pick<AppContext, "database" | "now">,
+    token: string,
+    input: AccountUpdate,
+  ) {
+    const user = AuthService.session(context, token);
+    if (!user) throw new AppError(401, "UNAUTHENTICATED", "请先登录");
+
+    const admin = findAdministrator(context.database, user.username);
+    if (
+      !admin ||
+      !(await Bun.password.verify(input.currentPassword, admin.passwordHash))
+    ) {
+      throw new AppError(400, "INVALID_PASSWORD", "当前密码不正确");
+    }
+
+    const username = input.username.trim();
+    if (!username)
+      throw new AppError(400, "USERNAME_REQUIRED", "用户名不能为空");
+
+    const passwordHash = await Bun.password.hash(input.newPassword, {
+      algorithm: "argon2id",
+      memoryCost: 19456,
+      timeCost: 2,
+    });
+
+    return transaction(
+      context.database,
+      () => {
+        if (
+          !AuthService.session(context, token) ||
+          !updateAdministrator(context.database, admin.id, admin.passwordHash, {
+            username,
+            passwordHash,
+          })
+        ) {
+          throw new AppError(
+            409,
+            "ACCOUNT_CHANGED",
+            "登录状态或账号已变更，请重新登录",
+          );
+        }
+
+        deleteAdministratorSessions(context.database, admin.id);
+        return AuthService.newSession(context, admin.id);
+      },
+      "immediate",
+    );
   }
 
   static async login(
