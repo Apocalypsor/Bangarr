@@ -36,6 +36,8 @@ jobs:
       - run: bun run build
 
   containers:
+    # Publishing already builds both architectures after checks pass.
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref != 'refs/heads/main')
     needs: checks
     strategy:
       matrix:
