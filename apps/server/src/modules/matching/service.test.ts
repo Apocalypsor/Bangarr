@@ -33,7 +33,7 @@ afterEach(() => {
   for (const dispose of disposables.splice(0)) dispose();
 });
 
-test("date disambiguation ignores weak title candidates and equal scores never break by ID", async () => {
+test("local matching uses the nearest date and preserves catalog order without dates", async () => {
   const context = testContext();
 
   disposables.push(context.dispose);
@@ -49,7 +49,7 @@ test("date disambiguation ignores weak title candidates and equal scores never b
     insertSubject(catalog, {
       ...subject,
       type: 2,
-      name_cn: "",
+      name_cn: subject.name,
       platform: "TV",
       source: "data",
     });
@@ -68,7 +68,6 @@ test("date disambiguation ignores weak title candidates and equal scores never b
 
   config.bangumi.dataEnabled = true;
   config.sync.confidence = 0.6;
-  config.sync.minMargin = 0;
 
   const item: PlexItem = {
     ratingKey: "fixture",
@@ -85,14 +84,16 @@ test("date disambiguation ignores weak title candidates and equal scores never b
   expect(
     (await MatchingService.selectSubject(service, item, api, config)).id,
   ).toBe(2);
-  await expect(
-    MatchingService.selectSubject(
-      service,
-      { ...item, releaseDate: "" },
-      api,
-      config,
-    ),
-  ).rejects.toBeInstanceOf(NeedsConfirmation);
+  expect(
+    (
+      await MatchingService.selectSubject(
+        service,
+        { ...item, releaseDate: "" },
+        api,
+        config,
+      )
+    ).id,
+  ).toBe(1);
 });
 
 test.each([
@@ -145,7 +146,7 @@ test.each([
   },
 );
 
-test("equally dated partial titles cannot fall back to an older exact title", async () => {
+test("API results do not inherit the local catalog date or equal-score gates", async () => {
   const context = testContext();
   disposables.push(context.dispose);
   const api = new BangumiClient("https://offline.invalid", "", async () =>
@@ -171,24 +172,26 @@ test("equally dated partial titles cannot fall back to an older exact title", as
     }),
   );
 
-  await expect(
-    MatchingService.selectSubject(
-      context,
-      {
-        ratingKey: "ambiguous",
-        title: "My Anime",
-        originalTitle: "",
-        season: 2,
-        episode: 1,
-        releaseDate: "2024-01-08",
-        mediaType: "episode",
-        viewCount: 1,
-        lastViewedAt: null,
-      },
-      api,
-      defaultSettings,
-    ),
-  ).rejects.toBeInstanceOf(NeedsConfirmation);
+  expect(
+    (
+      await MatchingService.selectSubject(
+        context,
+        {
+          ratingKey: "ambiguous",
+          title: "My Anime",
+          originalTitle: "",
+          season: 2,
+          episode: 1,
+          releaseDate: "2024-01-08",
+          mediaType: "episode",
+          viewCount: 1,
+          lastViewedAt: null,
+        },
+        api,
+        defaultSettings,
+      )
+    ).id,
+  ).toBe(1);
 });
 
 test.each([true, false])(
@@ -210,18 +213,42 @@ test.each([true, false])(
       async (request) => {
         const url = new URL(request.url);
         calls.push(url.pathname);
-        if (url.pathname === "/v0/search/subjects")
-          return Response.json({
-            data: splitCourTitles,
-            total: splitCourTitles.length,
-          });
+        if (url.pathname === "/v0/search/subjects") {
+          const { filter } = (await request.json()) as {
+            filter: { air_date?: string[] };
+          };
+          const rows = splitCourTitles.filter(
+            (row) =>
+              !filter.air_date ||
+              filter.air_date.every((condition: string) =>
+                condition.startsWith(">=")
+                  ? row.date >= condition.slice(2)
+                  : row.date < condition.slice(1),
+              ),
+          );
+          return Response.json({ data: rows, total: rows.length });
+        }
+        const id = Number(
+          url.searchParams.get("subject_id") ?? url.pathname.split("/")[3],
+        );
+        const ids = [277554, 325585, 373247, 444557];
         if (url.pathname === "/v0/episodes") {
-          expect(url.searchParams.get("subject_id")).toBe("444557");
           const episodes =
-            mushokuSeasonTwo.find((row) => row.subject.id === 444557)
-              ?.episodes ?? [];
+            mushokuSeasonTwo.find((row) => row.subject.id === id)?.episodes ??
+            [];
           return Response.json({ data: episodes, total: episodes.length });
         }
+        if (url.pathname.endsWith("/subjects")) {
+          const index = ids.indexOf(id);
+          return Response.json([
+            ...(index > 0 ? [{ id: ids[index - 1], relation: "前传" }] : []),
+            ...(index < ids.length - 1
+              ? [{ id: ids[index + 1], relation: "续集" }]
+              : []),
+          ]);
+        }
+        if (url.pathname.startsWith("/v0/subjects/"))
+          return Response.json(splitCourTitles.find((row) => row.id === id));
         throw new Error(`Unexpected request ${url.pathname}`);
       },
     );

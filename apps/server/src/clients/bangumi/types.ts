@@ -1,3 +1,10 @@
+export interface BangumiSearchOptions {
+  startDate?: string;
+  endDate?: string;
+  limit?: number;
+  types?: number[];
+}
+
 export interface BangumiUser {
   id: number;
   username: string;
@@ -8,7 +15,7 @@ export interface BangumiSubject {
   id: number;
   name: string;
   name_cn: string;
-  date?: string;
+  date?: string | null;
   type: number;
   platform?: string;
   aliases?: string[];

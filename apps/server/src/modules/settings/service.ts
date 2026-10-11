@@ -22,7 +22,12 @@ export abstract class SettingsService {
     return Object.fromEntries(
       Object.entries(defaultSettings).map(([section, defaults]) => [
         section,
-        { ...structuredClone(defaults), ...saved[section] },
+        Object.fromEntries(
+          Object.entries(defaults).map(([key, value]) => [
+            key,
+            saved[section]?.[key] ?? structuredClone(value),
+          ]),
+        ),
       ]),
     ) as Settings;
   }

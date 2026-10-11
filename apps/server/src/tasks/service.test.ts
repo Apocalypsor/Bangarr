@@ -17,7 +17,7 @@ afterEach(() => {
   for (const dispose of disposables.splice(0)) dispose();
 });
 
-const fixture = async (ambiguous = false) => {
+const fixture = async (needsConfirmation = false) => {
   const context = testContext();
 
   disposables.push(context.dispose);
@@ -27,6 +27,7 @@ const fixture = async (ambiguous = false) => {
     vault: context.vault,
   };
   const config = structuredClone(defaultSettings);
+  if (needsConfirmation) config.sync.confidence = 0.9;
 
   seedPlexAccount(context);
   SettingsService.save(settings, config);
@@ -86,12 +87,17 @@ const fixture = async (ambiguous = false) => {
 
       return Response.json({
         data: [
-          { id: 10, name: "番剧", name_cn: "番剧", type: 2 },
-          ...(ambiguous
-            ? [{ id: 11, name: "番剧", name_cn: "番剧", type: 2 }]
+          {
+            id: 10,
+            name: needsConfirmation ? "番剧甲" : "番剧",
+            name_cn: "",
+            type: 2,
+          },
+          ...(needsConfirmation
+            ? [{ id: 11, name: "番剧乙", name_cn: "", type: 2 }]
             : []),
         ],
-        total: ambiguous ? 2 : 1,
+        total: needsConfirmation ? 2 : 1,
       });
     }
 
@@ -960,7 +966,7 @@ test("successful retries close only their own stale matching candidates", async 
   expect(database.orm.select().from(candidates).all()).toHaveLength(2);
 });
 
-test("ambiguous match writes nothing until confirmed mapping retries the original task", async () => {
+test("low-confidence match writes nothing until confirmed mapping retries the original task", async () => {
   const { runner, database, settings, writes } = await fixture(true);
 
   JobsService.enqueue(runner, {

@@ -12,7 +12,7 @@ export interface MatchCandidate {
   date: string;
   score: number;
   source: string;
-  dateMatched?: boolean;
+  seasonMatched?: boolean;
 }
 
 export type MatchResult = typeof matchResultSchema.static;

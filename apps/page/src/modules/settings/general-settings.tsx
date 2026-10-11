@@ -100,7 +100,7 @@ export const GeneralSettings = ({ draft, update }: Props) => {
         <CardContent>
           <FieldGroup>
             <Field>
-              <FieldLabel htmlFor="confidence">最低匹配置信度</FieldLabel>
+              <FieldLabel htmlFor="confidence">在线匹配最低置信度</FieldLabel>
               <Input
                 id="confidence"
                 type="number"
@@ -110,21 +110,6 @@ export const GeneralSettings = ({ draft, update }: Props) => {
                 value={draft.sync.confidence}
                 onChange={(e) =>
                   update("sync", { confidence: Number(e.target.value) })
-                }
-              />
-            </Field>
-
-            <Field>
-              <FieldLabel htmlFor="margin">候选最低领先幅度</FieldLabel>
-              <Input
-                id="margin"
-                type="number"
-                min={0}
-                max={1}
-                step={0.01}
-                value={draft.sync.minMargin}
-                onChange={(e) =>
-                  update("sync", { minMargin: Number(e.target.value) })
                 }
               />
             </Field>

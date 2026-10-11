@@ -4,6 +4,7 @@ import type {
   BangumiEpisodeCollection,
   BangumiPage,
   BangumiRelation,
+  BangumiSearchOptions,
   BangumiSubject,
   BangumiUser,
 } from "@server/clients/bangumi/types";
@@ -40,16 +41,28 @@ export class BangumiClient {
     return this.http.json<BangumiRelation[]>(`subjects/${id}/subjects`);
   }
 
-  async search(keyword: string, realAction = false) {
+  async search(
+    keyword: string,
+    realAction = false,
+    options: BangumiSearchOptions = {},
+  ) {
+    const airDate = [
+      options.startDate && `>=${options.startDate}`,
+      options.endDate && `<${options.endDate}`,
+    ].filter(Boolean);
     const page = await this.http.json<BangumiPage<BangumiSubject>>(
       "search/subjects",
       {
         method: "POST",
-        params: { limit: 20 },
+        params: { limit: options.limit ?? 20 },
         body: {
           keyword,
           sort: "match",
-          filter: { type: realAction ? [2, 6] : [2], nsfw: true },
+          filter: {
+            type: options.types ?? (realAction ? [2, 6] : [2]),
+            nsfw: true,
+            ...(airDate.length ? { air_date: airDate } : {}),
+          },
         },
       },
     );

@@ -1,5 +1,8 @@
 import type { BangumiClient } from "@server/clients/bangumi";
-import type { BangumiSubject } from "@server/clients/bangumi/types";
+import type {
+  BangumiSearchOptions,
+  BangumiSubject,
+} from "@server/clients/bangumi/types";
 import type { PlexItem } from "@server/clients/plex/types";
 import { CatalogStore } from "@server/db/catalog";
 import { transaction } from "@server/db/client";
@@ -27,14 +30,14 @@ import type {
   MatchResult,
 } from "@server/modules/matching/types";
 import {
+  apiCandidate,
   conflictingEpisodeDate,
-  currentTitleDate,
   episodeDateConflicts,
   findEpisode,
-  isMovie,
-  mergeSubject,
-  selectCandidate,
-  subjectAliases,
+  searchDateWindow,
+  selectApiSubject,
+  selectCatalogSubject,
+  subjectMediaType,
 } from "@server/modules/matching/utils/candidates";
 import type { EpisodeSegment } from "@server/modules/matching/utils/episodes";
 import {
@@ -46,10 +49,14 @@ import {
   orderSegments,
 } from "@server/modules/matching/utils/episodes";
 import {
+  catalogTitle,
+  normalizeSearchTitle,
   normalizeTitle,
+  searchVariants,
   seasonNumbers,
-  similarity,
+  stripSeasonSuffix,
   titleNames,
+  titleRatio,
 } from "@server/modules/matching/utils/title";
 import type { Settings } from "@server/modules/settings/model";
 import { SettingsService } from "@server/modules/settings/service";
@@ -120,17 +127,12 @@ export abstract class MatchingService {
       trace,
     );
 
-    const explicit = seasonNumbers(`${first.name} ${first.nameCn}`);
-    const seasonMatched =
-      first.dateMatched === true ||
-      (explicit.size === 1 && explicit.has(item.season));
-
     const episode = await MatchingService.resolveEpisode(
       context,
       item,
       api,
       first.id,
-      seasonMatched,
+      first.seasonMatched ?? false,
       trace,
     );
 
@@ -144,123 +146,177 @@ export abstract class MatchingService {
     config: Settings,
     trace: Record<string, unknown>[] = [],
   ): Promise<MatchCandidate> {
-    const names = titleNames(item.title, item.originalTitle);
-
-    const subjects = new Map<number, BangumiSubject>();
-
-    const local = config.bangumi.dataEnabled
-      ? new CatalogStore(context.database.path).search(
-          names,
-          Boolean(item.releaseDate),
-        )
-      : [];
-
-    for (const candidate of local) mergeSubject(subjects, candidate);
-
-    const exactIds = new Set(
-      local
-        .filter((subject) =>
-          subjectAliases(subject).some((alias) =>
-            names.some(
-              (name) => normalizeTitle(name) === normalizeTitle(alias),
+    let localCandidates: MatchCandidate[] = [];
+    if (config.bangumi.dataEnabled) {
+      try {
+        const titles = [
+          ...new Set([catalogTitle(item.title, item.season), item.title]),
+        ];
+        const store = new CatalogStore(context.database.path);
+        for (const title of titles) {
+          const local = store.search(
+            titleNames(title, item.originalTitle),
+            Boolean(item.releaseDate),
+          );
+          const result = selectCatalogSubject(
+            local.filter(
+              (subject) =>
+                subject.type === 2 ||
+                (config.sync.realAction && subject.type === 6),
             ),
-          ),
-        )
-        .map((subject) => subject.id),
-    );
-
-    trace.push({
-      step: "local-catalog",
-      candidates: local.length,
-      exact: [...exactIds],
-    });
-
-    const datedLocalMatch = local.some(
-      (subject) =>
-        exactIds.has(subject.id) &&
-        subject.date &&
-        currentTitleDate(subject.date, item.releaseDate),
-    );
-    if (exactIds.size !== 1 || (item.releaseDate && !datedLocalMatch)) {
-      for (const name of names)
-        for (const subject of await api.search(name, config.sync.realAction))
-          mergeSubject(subjects, subject);
+            { ...item, title },
+          );
+          trace.push(...result.trace);
+          localCandidates = result.candidates;
+          if (result.candidate) return result.candidate;
+          // A rejected dated hit advances to the API, not another local selection.
+          if (result.rejected) break;
+        }
+      } catch {
+        trace.push({
+          step: "local-catalog",
+          outcome: "error",
+          reason: "本地目录不可用，继续在线搜索",
+        });
+      }
     }
 
-    const scored = [...subjects.values()]
-      .filter(
-        (subject) =>
-          subject.type === 2 || (config.sync.realAction && subject.type === 6),
-      )
-      .map((subject) => {
-        const aliases = subjectAliases(subject);
-        const season = seasonNumbers(`${subject.name} ${subject.name_cn}`);
-
-        let score = Math.max(
-          ...names.flatMap((name) =>
-            aliases.map((alias) => similarity(name, alias)),
-          ),
-          0,
-        );
-
-        if (
-          score < 1 &&
-          season.size === 1 &&
-          !season.has(item.season) &&
-          item.season !== 0
-        )
-          score *= 0.75;
-
-        return {
-          id: subject.id,
-          name: subject.name,
-          nameCn: subject.name_cn,
-          date: subject.date ?? "",
-          score,
-          source:
-            local.find((row) => row.id === subject.id)?.source ?? "bangumi",
-        };
-      })
-      .sort((a, b) => b.score - a.score || a.id - b.id);
-
-    const eligibleMovies = scored.filter(
-      (row) =>
-        row.score >= config.sync.confidence && isMovie(subjects.get(row.id)),
+    const searchItem = {
+      ...item,
+      title: normalizeSearchTitle(item.title) || item.title,
+    };
+    const subjects = await MatchingService.searchSubjects(
+      searchItem,
+      api,
+      config,
+      trace,
     );
-
-    if (item.mediaType === "movie" && eligibleMovies.length)
-      for (const row of scored)
-        if (!isMovie(subjects.get(row.id))) row.score *= 0.75;
+    const selected = selectApiSubject(subjects, searchItem);
+    let subject = selected.subject;
+    let seasonMatched = selected.seasonMatched;
 
     if (
-      item.mediaType === "episode" &&
-      item.season > 0 &&
-      !item.releaseDate &&
-      !names.some((name) => /\b(?:OVA|OAD|SP)\b/i.test(name)) &&
-      scored.some(
-        (row) =>
-          row.score === 1 &&
-          ["TV", "WEB"].includes(subjects.get(row.id)?.platform ?? ""),
-      )
-    )
-      for (const row of scored)
-        if (["OVA", "剧场版"].includes(subjects.get(row.id)?.platform ?? ""))
-          row.score *= 0.75;
+      subject &&
+      !seasonMatched &&
+      subjectMediaType(subject) !== item.mediaType
+    ) {
+      try {
+        const related = (await api.relations(subject.id)).filter(
+          (row) =>
+            (row.type === 2 || (config.sync.realAction && row.type === 6)) &&
+            titleRatio(row.name_cn || row.name, item.title) >= 0.25 &&
+            subjectMediaType(row) === item.mediaType,
+        );
+        const replacement =
+          related.find((row) => row.relation === "主线故事") ?? related[0];
+        if (replacement) {
+          subject = await api.subject(replacement.id);
+          seasonMatched = true;
+        }
+      } catch (error) {
+        if (!(error instanceof AppError) || error.status !== 502) throw error;
+        trace.push({ step: "api-related", outcome: "error" });
+      }
+    }
 
-    scored.sort((a, b) => b.score - a.score || a.id - b.id);
-    trace.push({ step: "search", names, candidates: scored });
+    const candidate = subject
+      ? { ...apiCandidate(subject, searchItem), seasonMatched }
+      : undefined;
+    trace.push({
+      step: "api-selection",
+      subjectId: candidate?.id,
+      score: candidate?.score,
+      confidence: config.sync.confidence,
+      candidates: selected.candidates,
+    });
+    if (!candidate || candidate.score < config.sync.confidence)
+      throw new NeedsConfirmation(
+        [
+          ...new Map(
+            [...selected.candidates, ...localCandidates].map((row) => [
+              row.id,
+              row,
+            ]),
+          ).values(),
+        ].slice(0, 10),
+        trace,
+      );
+    return candidate;
+  }
 
-    const selected = selectCandidate(
-      scored,
-      subjects,
-      names,
-      item.releaseDate,
-      config.sync,
-    );
-    trace.push(...selected.trace);
-    if (!selected.candidate)
-      throw new NeedsConfirmation(scored.slice(0, 10), trace);
-    return selected.candidate;
+  private static async searchSubjects(
+    item: PlexItem,
+    api: BangumiClient,
+    config: Settings,
+    trace: Record<string, unknown>[],
+  ) {
+    let subjects: BangumiSubject[] = [];
+    let lastError: AppError | undefined;
+    let responded = false;
+    const search = async (name: string, options: BangumiSearchOptions) => {
+      try {
+        const rows = await api.search(name, config.sync.realAction, options);
+        responded = true;
+        const found = rows.filter(
+          (row) => row.type === 2 || (config.sync.realAction && row.type === 6),
+        );
+        trace.push({
+          step: options.startDate ? "api-date-search" : "api-variant-search",
+          name,
+          ...options,
+          candidates: found.length,
+        });
+        return found;
+      } catch (error) {
+        if (!(error instanceof AppError) || error.status !== 502) throw error;
+        lastError = error;
+        trace.push({ step: "api-search", name, outcome: "error" });
+        return [];
+      }
+    };
+
+    const window = searchDateWindow(item.releaseDate);
+    if (window) {
+      const names = [
+        ...new Set(
+          [
+            item.originalTitle,
+            item.title,
+            stripSeasonSuffix(item.title),
+            stripSeasonSuffix(item.originalTitle),
+          ].filter(Boolean),
+        ),
+      ];
+      for (const name of names) {
+        subjects = await search(name, { ...window, limit: 5 });
+        if (subjects.length) break;
+      }
+      if (!subjects.length && item.mediaType === "movie")
+        subjects = await search(item.originalTitle || item.title, {
+          ...searchDateWindow(item.releaseDate, true),
+          limit: 5,
+        });
+    }
+
+    if (!subjects[0] || apiCandidate(subjects[0], item).score < 0.5) {
+      fallback: for (const name of searchVariants(
+        item.title,
+        item.originalTitle,
+      )) {
+        for (const type of config.sync.realAction ? [2, 6] : [2]) {
+          const found = (
+            await search(name, { limit: 15, types: [type] })
+          ).filter((row) => apiCandidate(row, item).score > 0.3);
+          if (found.length) {
+            subjects = found;
+            break fallback;
+          }
+        }
+      }
+    }
+    // A remote outage is retryable; it must not become a permanent manual-match task.
+    if (!responded && lastError) throw lastError;
+    return subjects;
   }
 
   static async resolveEpisode(

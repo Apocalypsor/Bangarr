@@ -5,7 +5,6 @@ export const settingsSchema = t.Object(
   {
     sync: t.Object({
       confidence: t.Number({ minimum: 0, maximum: 1 }),
-      minMargin: t.Number({ minimum: 0, maximum: 1 }),
       realAction: t.Boolean(),
       movieWatching: t.Boolean(),
       movieCompleted: t.Boolean(),
@@ -32,8 +31,7 @@ export type Settings = typeof settingsSchema.static;
 
 export const defaultSettings: Settings = {
   sync: {
-    confidence: 0.85,
-    minMargin: 0.1,
+    confidence: 0.6,
     realAction: false,
     movieWatching: true,
     movieCompleted: true,
