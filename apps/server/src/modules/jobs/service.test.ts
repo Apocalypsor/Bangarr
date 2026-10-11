@@ -225,6 +225,52 @@ test("task progress persists and expired workers cannot overwrite it", () => {
   expect(JobsService.page(queue).items[0]?.progress).toBe("观看进度已同步");
 });
 
+test("scan diagnostics expose only safe fields and remain available after failure", () => {
+  const { queue } = fixture();
+  const { job } = JobsService.enqueue(queue, {
+    kind: "plex-scan",
+    dedupeKey: "scan",
+    payload: { token: "payload-secret" },
+  });
+  JobsService.claim(queue, "worker");
+  JobsService.reportProgress(queue, job.id, "worker", "扫描未完成", {
+    scan: {
+      scanned: 1,
+      queued: 0,
+      skipped: 0,
+      failedItems: 1,
+      failedLibraries: 0,
+      issuesOmitted: 0,
+      token: "report-secret",
+      issues: [
+        {
+          id: "issue-1",
+          scope: "item",
+          libraryTitle: "动画",
+          ratingKey: "bad",
+          title: "番剧",
+          message: "集数无效",
+          token: "issue-secret",
+          raw: { token: "raw-secret" },
+        },
+      ],
+    },
+  });
+  JobsService.fail(queue, job.id, "worker", "有异常项目", false);
+  const page = JobsService.page(queue, { state: "failed" });
+  expect(page.items[0]?.scan?.issues).toEqual([
+    {
+      id: "issue-1",
+      scope: "item",
+      libraryTitle: "动画",
+      ratingKey: "bad",
+      title: "番剧",
+      message: "集数无效",
+    },
+  ]);
+  expect(JSON.stringify(page)).not.toContain("secret");
+});
+
 test("active task pages exclude finished history before pagination and separate waiting from retrying", () => {
   const { queue, advance } = fixture();
   const enqueue = (key: string) =>

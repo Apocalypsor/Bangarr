@@ -1,14 +1,15 @@
 import { afterEach, expect, test } from "bun:test";
-import type { BangumiEpisode, BangumiSubject } from "@server/clients/bangumi";
 import { BangumiClient } from "@server/clients/bangumi";
-import type { PlexItem } from "@server/clients/plex";
+import type {
+  BangumiEpisode,
+  BangumiSubject,
+} from "@server/clients/bangumi/types";
+import type { PlexItem } from "@server/clients/plex/types";
 import { CatalogStore, createCatalog, insertSubject } from "@server/db/catalog";
 import { accounts, candidates, jobs } from "@server/db/schema";
 import { JobsService } from "@server/modules/jobs/service";
-import {
-  MatchingService,
-  NeedsConfirmation,
-} from "@server/modules/matching/service";
+import { NeedsConfirmation } from "@server/modules/matching/errors";
+import { MatchingService } from "@server/modules/matching/service";
 import { defaultSettings } from "@server/modules/settings/model";
 import { SettingsService } from "@server/modules/settings/service";
 import { testContext } from "@server/utils/testing";
@@ -21,6 +22,7 @@ interface Segment {
   platform?: string;
   type?: number;
   omit?: number;
+  airdate?: string;
 }
 
 const disposables: (() => void)[] = [];
@@ -125,6 +127,7 @@ const fixture = (
         type: 0,
         sort: (segment.start ?? 1) + i,
         ep: i + 1,
+        airdate: segment.airdate,
         name: "",
         name_cn: "",
       })).filter((ep) => ep.ep !== segment.omit),
@@ -173,6 +176,7 @@ const fixture = (
     season: number,
     episode: number,
     root = segments[0]?.id ?? 0,
+    releaseDate = "",
   ) =>
     MatchingService.resolveEpisode(
       service,
@@ -183,7 +187,7 @@ const fixture = (
         season,
         episode,
         mediaType: "episode",
-        releaseDate: "",
+        releaseDate,
         viewCount: 1,
         lastViewedAt: null,
       } satisfies PlexItem,
@@ -193,8 +197,62 @@ const fixture = (
       [],
     );
 
-  return { resolve, calls };
+  return { resolve, calls, context, api };
 };
+
+test("episode zero resolves within the requested season without shifting episode one", async () => {
+  const { resolve } = fixture([
+    { id: 1, name: "番剧", start: 0, count: 3 },
+    { id: 2, name: "番剧 第二季", start: 0, count: 3 },
+  ]);
+  expect(await resolve(2, 0)).toEqual({ subjectId: 2, episodeId: 2001 });
+  expect(await resolve(2, 1)).toEqual({ subjectId: 2, episodeId: 2002 });
+  await expect(resolve(3, 0)).rejects.toBeInstanceOf(NeedsConfirmation);
+});
+
+test("a matching airdate does not turn episode zero into a different numbered chapter", async () => {
+  const { resolve } = fixture([
+    { id: 1, name: "番剧", count: 1 },
+    { id: 2, name: "番剧 第二季", count: 1, airdate: "2026-01-01" },
+  ]);
+  await expect(resolve(2, 0, 1, "2026-01-01")).rejects.toBeInstanceOf(
+    NeedsConfirmation,
+  );
+});
+
+test("manual mappings accept zero, preserve offsets and reject negative effective episodes", async () => {
+  const { context, api } = fixture([
+    { id: 2, name: "番剧 第二季", start: 0, count: 3 },
+  ]);
+  const item: PlexItem = {
+    ratingKey: "zero",
+    title: "番剧",
+    originalTitle: "",
+    season: 2,
+    episode: 0,
+    mediaType: "episode",
+    releaseDate: "",
+    viewCount: 1,
+    lastViewedAt: null,
+  };
+  for (const offset of [0, 1, -1]) {
+    MatchingService.save(context, {
+      title: item.title,
+      season: 2,
+      subjectId: 2,
+      episodeOffset: offset,
+    });
+    const result = MatchingService.match(context, item, api, defaultSettings);
+    if (offset < 0)
+      await expect(result).rejects.toMatchObject({ code: "EPISODE_RANGE" });
+    else
+      expect(await result).toMatchObject({
+        subjectId: 2,
+        episodeId: 2001 + offset,
+        mapped: true,
+      });
+  }
+});
 
 test("split cours in the same declared season use cumulative local episodes in relation order", async () => {
   const { resolve } = fixture([

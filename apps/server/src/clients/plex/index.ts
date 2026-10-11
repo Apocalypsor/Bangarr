@@ -1,30 +1,23 @@
+import { createHash } from "node:crypto";
+import type {
+  PlexContainer,
+  PlexItem,
+  PlexLibrary,
+  PlexScanEvent,
+  PlexScanIssue,
+} from "@server/clients/plex/types";
+import {
+  containerRows,
+  isObject,
+  parsePlexContainer,
+  parsePlexItem,
+  plexNumber,
+  plexText,
+} from "@server/clients/plex/utils";
 import { AppError, RemoteError } from "@server/utils/errors";
 import type { HttpTransport } from "@server/utils/http";
 import { HttpClient } from "@server/utils/http";
 import { validateHttpUrl } from "@server/utils/url";
-import { XMLParser } from "fast-xml-parser";
-
-export interface PlexLibrary {
-  id: string;
-  title: string;
-  type: "show" | "movie";
-}
-
-export interface PlexItem {
-  ratingKey: string;
-  title: string;
-  originalTitle: string;
-  season: number;
-  episode: number;
-  mediaType: "episode" | "movie";
-  releaseDate: string;
-  viewCount: number;
-  lastViewedAt: number | null;
-}
-
-interface Container {
-  [key: string]: unknown;
-}
 
 export class PlexClient {
   private http: HttpClient;
@@ -51,7 +44,7 @@ export class PlexClient {
   async libraries(): Promise<PlexLibrary[]> {
     const body = await this.container("library/sections");
 
-    return rows(body, "Directory")
+    return containerRows(body, "Directory")
       .filter((row) => row.type === "show" || row.type === "movie")
       .map((row) => ({
         id: String(row.key),
@@ -63,42 +56,46 @@ export class PlexClient {
   async *watched(
     libraryIds: string[],
     signal?: AbortSignal,
-  ): AsyncGenerator<PlexItem> {
+  ): AsyncGenerator<PlexScanEvent> {
     const libraries = await this.libraries();
 
-    if (
-      libraryIds.some((id) => !libraries.some((library) => library.id === id))
-    )
-      throw new AppError(
-        400,
-        "PLEX_LIBRARY_MISSING",
-        "所选媒体库不可访问，请重新选择媒体库",
-      );
+    for (const id of new Set(libraryIds))
+      if (!libraries.some((library) => library.id === id))
+        yield scanIssue(
+          { id, title: id, type: "show" },
+          "library",
+          "所选媒体库不可访问，请重新选择媒体库",
+        );
 
     for (const library of libraries) {
       if (libraryIds.length && !libraryIds.includes(library.id)) continue;
 
-      let found = false;
-
       try {
-        for await (const item of this.scan(library, true, signal)) {
-          found = true;
-          yield item;
-        }
-      } catch (error) {
-        if (
-          !(
-            library.type === "show" &&
-            !found &&
-            error instanceof RemoteError &&
-            [400, 422].includes(error.remoteStatus)
+        let found = false;
+        try {
+          for await (const event of this.scan(library, true, signal)) {
+            found = true;
+            yield event;
+          }
+        } catch (error) {
+          if (
+            !(
+              library.type === "show" &&
+              !found &&
+              error instanceof RemoteError &&
+              [400, 422].includes(error.remoteStatus)
+            )
           )
-        )
-          throw error;
-      }
+            throw error;
+        }
 
-      if (!found && library.type === "show")
-        yield* this.scan(library, false, signal);
+        if (!found && library.type === "show")
+          yield* this.scan(library, false, signal);
+      } catch (error) {
+        if (!isLibraryError(error)) throw error;
+
+        yield scanIssue(library, "library", error.message, undefined, error);
+      }
     }
   }
 
@@ -106,8 +103,9 @@ export class PlexClient {
     library: PlexLibrary,
     filtered: boolean,
     signal?: AbortSignal,
-  ) {
+  ): AsyncGenerator<PlexScanEvent> {
     const seen = new Set<string>();
+    const pages = new Set<string>();
     let offset = 0;
 
     while (true) {
@@ -127,7 +125,13 @@ export class PlexClient {
         signal,
       );
 
-      const entries = rows(body, "Metadata");
+      const entries: unknown =
+        body.Metadata ??
+        (Number(body.size ?? body.totalSize) === 0 ? [] : undefined);
+
+      if (!Array.isArray(entries))
+        throw new AppError(502, "PLEX_INVALID_LIST", "Plex 返回了无效列表");
+
       const total =
         body.totalSize === undefined ? null : Number(body.totalSize);
 
@@ -144,26 +148,56 @@ export class PlexClient {
       if (body.offset !== undefined && Number(body.offset) !== offset)
         throw new AppError(502, "PLEX_INVALID_PAGE", "Plex 分页位置不正确");
 
-      if (entries.every((row) => seen.has(String(row.ratingKey))))
+      const fingerprint = createHash("sha256")
+        .update(JSON.stringify(entries))
+        .digest("hex");
+      if (
+        pages.has(fingerprint) ||
+        entries.every(
+          (row) => isObject(row) && seen.has(plexText(row.ratingKey)),
+        )
+      )
         throw new AppError(502, "PLEX_REPEATED_PAGE", "Plex 返回了重复分页");
+      pages.add(fingerprint);
 
       for (const row of entries) {
-        const key = String(row.ratingKey ?? "");
-
-        if (!key)
-          throw new AppError(502, "PLEX_INVALID_ITEM", "Plex 项目缺少标识");
-
-        if (seen.has(key)) continue;
-
-        seen.add(key);
-
-        if (
-          Number(row.viewCount ?? 0) <= 0 ||
-          !["movie", "episode"].includes(String(row.type))
-        )
+        if (!isObject(row)) {
+          yield scanIssue(library, "item", "Plex 项目格式无效");
           continue;
+        }
 
-        yield parsePlexItem(row);
+        const key = plexText(row.ratingKey);
+        if (key && seen.has(key)) continue;
+        if (key) seen.add(key);
+
+        if (row.type !== "movie" && row.type !== "episode") continue;
+
+        const viewCount = plexNumber(row.viewCount ?? 0);
+        if (!Number.isInteger(viewCount) || viewCount < 0) {
+          yield scanIssue(library, "item", "Plex 项目观看次数无效", row);
+          continue;
+        }
+        if (viewCount === 0) continue;
+
+        if (!key) {
+          yield scanIssue(library, "item", "Plex 项目缺少标识", row);
+          continue;
+        }
+
+        let item: PlexItem;
+        try {
+          item = parsePlexItem(row);
+        } catch (error) {
+          if (
+            !(error instanceof AppError) ||
+            error.code !== "PLEX_INVALID_ITEM"
+          )
+            throw error;
+          yield scanIssue(library, "item", error.message, row);
+          continue;
+        }
+
+        yield { type: "item", item };
       }
 
       offset += entries.length;
@@ -176,95 +210,49 @@ export class PlexClient {
     path: string,
     params?: Record<string, string | number>,
     signal?: AbortSignal,
-  ): Promise<Container> {
+  ): Promise<PlexContainer> {
     const response = await this.http.request(path, { params, signal });
     const text = await response.text();
 
-    try {
-      let parsed: unknown;
-
-      if (text.trimStart().startsWith("<")) {
-        // 不解析外部实体/DTD，固定集合为数组，包括只有一个元素时。
-        if (/<!DOCTYPE|<!ENTITY/i.test(text))
-          throw new Error("DTD is unsupported");
-
-        parsed = new XMLParser({
-          ignoreAttributes: false,
-          attributeNamePrefix: "",
-          parseAttributeValue: false,
-          processEntities: false,
-          isArray: (name) => ["Directory", "Video"].includes(name),
-        }).parse(text);
-      } else parsed = JSON.parse(text);
-
-      if (!isObject(parsed) || !isObject(parsed.MediaContainer))
-        throw new Error("Invalid container");
-
-      const container = parsed.MediaContainer;
-
-      if (container.Video !== undefined) container.Metadata = container.Video;
-
-      return container;
-    } catch {
-      throw new AppError(
-        502,
-        "PLEX_INVALID_RESPONSE",
-        "Plex 返回了无法识别的数据",
-      );
-    }
+    return parsePlexContainer(text);
   }
 }
 
-export const parsePlexItem = (row: Record<string, unknown>): PlexItem => {
-  const movie = row.type === "movie";
+const isLibraryError = (error: unknown): error is AppError =>
+  error instanceof RemoteError
+    ? ![401, 429].includes(error.remoteStatus)
+    : error instanceof AppError &&
+      [
+        "PLEX_INVALID_PAGE",
+        "PLEX_INCOMPLETE_PAGE",
+        "PLEX_REPEATED_PAGE",
+        "PLEX_INVALID_LIST",
+        "PLEX_INVALID_RESPONSE",
+      ].includes(error.code);
 
-  if (!movie && row.type !== "episode")
-    throw new AppError(400, "PLEX_UNSUPPORTED_TYPE", "只支持 Plex 剧集和电影");
-
-  const title = String((movie ? row.title : row.grandparentTitle) ?? "").trim();
-  const season = movie ? 1 : Number(row.parentIndex);
-  const episode = movie ? 1 : Number(row.index);
-
-  if (
-    !title ||
-    !Number.isInteger(season) ||
-    season < 0 ||
-    !Number.isInteger(episode) ||
-    episode < 1
-  )
-    throw new AppError(
-      400,
-      "PLEX_INVALID_ITEM",
-      "Plex 项目缺少标题、季度或集数",
-    );
-
-  return {
-    ratingKey: String(row.ratingKey ?? ""),
-    title,
-    originalTitle: movie ? String(row.originalTitle ?? "").trim() : "",
-    season,
-    episode,
-    mediaType: movie ? "movie" : "episode",
-    releaseDate: String(row.originallyAvailableAt ?? ""),
-    viewCount: Number(row.viewCount ?? 0),
-    lastViewedAt: row.lastViewedAt ? Number(row.lastViewedAt) : null,
-  };
-};
-
-const rows = (container: Container, key: string): Record<string, unknown>[] => {
-  const value = container[key];
-
-  if (
-    value === undefined &&
-    (Number(container.size) === 0 || Number(container.totalSize) === 0)
-  )
-    return [];
-
-  if (!Array.isArray(value) || !value.every(isObject))
-    throw new AppError(502, "PLEX_INVALID_LIST", "Plex 返回了无效列表");
-
-  return value;
-};
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
+const scanIssue = (
+  library: PlexLibrary,
+  scope: PlexScanIssue["scope"],
+  message: string,
+  row?: Record<string, unknown>,
+  error?: AppError,
+): PlexScanEvent => ({
+  type: "issue",
+  issue: {
+    id: crypto.randomUUID(),
+    scope,
+    libraryId: library.id,
+    libraryTitle: library.title.slice(0, 200),
+    ratingKey:
+      typeof row?.ratingKey === "string" || typeof row?.ratingKey === "number"
+        ? String(row.ratingKey).slice(0, 200)
+        : null,
+    title:
+      typeof (row?.grandparentTitle ?? row?.title) === "string"
+        ? String(row?.grandparentTitle ?? row?.title).slice(0, 500)
+        : null,
+    message,
+    retryable: error instanceof RemoteError && error.remoteStatus >= 500,
+    retryAfter: error instanceof RemoteError ? error.retryAfter : 0,
+  },
+});

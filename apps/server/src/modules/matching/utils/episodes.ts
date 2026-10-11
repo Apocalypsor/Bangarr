@@ -1,4 +1,7 @@
-import type { BangumiEpisode, BangumiSubject } from "@server/clients/bangumi";
+import type {
+  BangumiEpisode,
+  BangumiSubject,
+} from "@server/clients/bangumi/types";
 import { seasonNumbers } from "@server/modules/matching/utils/title";
 
 export interface EpisodeSegment {
@@ -77,8 +80,19 @@ export const findCumulativeEpisode = (
   let preceding = 0;
 
   for (const segment of segments) {
+    if (target === 0) {
+      const episode = findLocalEpisode(
+        segment.episodes.filter((ep) => ep.type === 0),
+        0,
+      );
+
+      return episode
+        ? { subjectId: segment.subject.id, episodeId: episode.id }
+        : undefined;
+    }
+
     const normal = segment.episodes.filter(
-      (ep) => ep.type === 0 && Number.isInteger(ep.sort),
+      (ep) => ep.type === 0 && Number.isInteger(ep.sort) && ep.sort > 0,
     );
 
     const first = Math.min(...normal.map((ep) => ep.sort));
@@ -117,8 +131,15 @@ export const findLocalEpisode = (
   episodes: BangumiEpisode[],
   target: number,
 ) => {
+  // Bangumi ep=0 can mean unspecified; only sort=0 identifies episode zero.
+  if (target === 0) {
+    const zero = episodes.filter((ep) => ep.sort === 0);
+
+    return zero.length === 1 ? zero[0] : undefined;
+  }
+
   const normal = episodes.filter(
-    (ep) => ep.type === 0 && Number.isFinite(ep.sort),
+    (ep) => ep.type === 0 && Number.isFinite(ep.sort) && ep.sort > 0,
   );
   const first = normal.length ? Math.min(...normal.map((ep) => ep.sort)) : null;
 
@@ -156,7 +177,8 @@ export const findMergedSeasonEpisode = (
   for (const ep of sorted) {
     const number = useEp ? (ep.ep ?? 0) : ep.sort;
 
-    if (!groups.length || (number === 1 && previous > 1)) groups.push([]);
+    if (!groups.length || ((number === 1 || ep.sort === 0) && previous > 1))
+      groups.push([]);
 
     groups[groups.length - 1]?.push(ep);
     previous = number;

@@ -6,7 +6,7 @@ import { AccountService } from "@server/modules/accounts/service";
 import { JobsService } from "@server/modules/jobs/service";
 import { PlexService } from "@server/modules/plex/service";
 import { SettingsService } from "@server/modules/settings/service";
-import { SyncService } from "@server/modules/sync/service";
+import { TaskService } from "@server/tasks/service";
 import { testContext } from "@server/utils/testing";
 
 const disposables: (() => void)[] = [];
@@ -90,8 +90,8 @@ test("Plex accounts isolate tokens, scans and webhook bindings across servers", 
   const scanB = PlexService.scan(context, second.id);
   expect(scanA.job.id).not.toBe(scanB.job.id);
   expect(PlexService.scan(context, first.id).created).toBe(false);
-  await SyncService.runOne(context);
-  await SyncService.runOne(context);
+  await TaskService.runOne(context);
+  await TaskService.runOne(context);
   const jobs = JobsService.list(context).filter((job) => job.kind === "sync");
   expect(jobs).toHaveLength(2);
   expect(new Set(jobs.map((job) => job.payload.scope)).size).toBe(2);
@@ -261,7 +261,7 @@ test("bulk scans yield to API requests while durably batching thousands of jobs"
     );
   }, 5);
   try {
-    await SyncService.runOne(context);
+    await TaskService.runOne(context);
     active = false;
   } finally {
     clearInterval(timer);

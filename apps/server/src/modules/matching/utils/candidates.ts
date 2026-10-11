@@ -1,4 +1,7 @@
-import type { BangumiEpisode, BangumiSubject } from "@server/clients/bangumi";
+import type {
+  BangumiEpisode,
+  BangumiSubject,
+} from "@server/clients/bangumi/types";
 import type { EpisodeSegment } from "@server/modules/matching/utils/episodes";
 import {
   dateDistance,
@@ -11,6 +14,8 @@ export const findEpisode = (
   seasonMatched: boolean,
   releaseDate: string,
 ) => {
+  if (target === 0) return findLocalEpisode(episodes, target);
+
   if (episodes.length >= 100 && releaseDate) {
     const dated = episodes.filter((ep) => ep.airdate === releaseDate);
 

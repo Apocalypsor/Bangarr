@@ -5,7 +5,10 @@ type JobsQuery = NonNullable<
   NonNullable<Parameters<typeof api.api.jobs.get>[0]>["query"]
 >;
 export type JobFilters = Pick<JobsQuery, "kind"> & {
-  state?: Extract<JobsQuery["state"], "waiting" | "running" | "retrying">;
+  state?: Extract<
+    JobsQuery["state"],
+    "waiting" | "running" | "retrying" | "failed"
+  >;
 };
 
 export const useJobsQuery = (filters: JobFilters, page: number) =>

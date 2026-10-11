@@ -1,53 +1,15 @@
+import type {
+  BangumiCollection,
+  BangumiEpisode,
+  BangumiEpisodeCollection,
+  BangumiPage,
+  BangumiRelation,
+  BangumiSubject,
+  BangumiUser,
+} from "@server/clients/bangumi/types";
 import { RemoteError } from "@server/utils/errors";
 import type { HttpTransport } from "@server/utils/http";
 import { HttpClient } from "@server/utils/http";
-
-export interface BangumiUser {
-  id: number;
-  username: string;
-  nickname: string;
-}
-
-export interface BangumiSubject {
-  id: number;
-  name: string;
-  name_cn: string;
-  date?: string;
-  type: number;
-  platform?: string;
-  aliases?: string[];
-  eps?: number;
-  infobox?: {
-    key: string;
-    value: unknown;
-  }[];
-}
-
-export interface BangumiEpisode {
-  id: number;
-  subject_id: number;
-  name: string;
-  name_cn: string;
-  sort: number;
-  ep?: number;
-  type: number;
-  airdate?: string;
-}
-
-export interface BangumiRelation {
-  id: number;
-  relation: string;
-  name: string;
-  name_cn: string;
-  type: number;
-}
-
-interface Page<T> {
-  data: T[];
-  total: number;
-  limit: number;
-  offset: number;
-}
 
 export class BangumiClient {
   private http: HttpClient;
@@ -74,15 +36,18 @@ export class BangumiClient {
   }
 
   async search(keyword: string, realAction = false) {
-    const page = await this.http.json<Page<BangumiSubject>>("search/subjects", {
-      method: "POST",
-      params: { limit: 20 },
-      body: {
-        keyword,
-        sort: "match",
-        filter: { type: realAction ? [2, 6] : [2], nsfw: true },
+    const page = await this.http.json<BangumiPage<BangumiSubject>>(
+      "search/subjects",
+      {
+        method: "POST",
+        params: { limit: 20 },
+        body: {
+          keyword,
+          sort: "match",
+          filter: { type: realAction ? [2, 6] : [2], nsfw: true },
+        },
       },
-    });
+    );
 
     return page.data;
   }
@@ -92,9 +57,12 @@ export class BangumiClient {
     const seen = new Set<number>();
 
     for (let offset = 0; ; ) {
-      const page = await this.http.json<Page<BangumiEpisode>>("episodes", {
-        params: { subject_id: subjectId, type, limit: 100, offset },
-      });
+      const page = await this.http.json<BangumiPage<BangumiEpisode>>(
+        "episodes",
+        {
+          params: { subject_id: subjectId, type, limit: 100, offset },
+        },
+      );
 
       if (!Array.isArray(page.data)) throw new Error("Bangumi 剧集列表无效");
 
@@ -123,11 +91,9 @@ export class BangumiClient {
 
   async collection(subjectId: number) {
     try {
-      return await this.http.json<{
-        type: number;
-        private: boolean;
-        ep_status?: number;
-      }>(`users/-/collections/${subjectId}`);
+      return await this.http.json<BangumiCollection>(
+        `users/-/collections/${subjectId}`,
+      );
     } catch (error) {
       if (error instanceof RemoteError && error.remoteStatus === 404)
         return null;
@@ -138,9 +104,9 @@ export class BangumiClient {
 
   async episodeCollection(episodeId: number) {
     try {
-      return await this.http.json<{
-        type: number;
-      }>(`users/-/collections/-/episodes/${episodeId}`);
+      return await this.http.json<BangumiEpisodeCollection>(
+        `users/-/collections/-/episodes/${episodeId}`,
+      );
     } catch (error) {
       if (error instanceof RemoteError && error.remoteStatus === 404)
         return null;

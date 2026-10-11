@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type { BangumiSubject } from "@server/clients/bangumi";
+import type { BangumiSubject } from "@server/clients/bangumi/types";
 import { normalizeTitle } from "@server/modules/matching/utils/title";
 import { AppError } from "@server/utils/errors";
 

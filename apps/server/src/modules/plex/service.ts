@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
-import type { PlexItem } from "@server/clients/plex";
-import { PlexClient, parsePlexItem } from "@server/clients/plex";
+import { PlexClient } from "@server/clients/plex";
+import type { PlexItem } from "@server/clients/plex/types";
+import { parsePlexItem } from "@server/clients/plex/utils";
 import { transaction } from "@server/db/client";
 import { readPlexAccounts, writePlexAccounts } from "@server/db/plex";
 import { AccountService } from "@server/modules/accounts/service";

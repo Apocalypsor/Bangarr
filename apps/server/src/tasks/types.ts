@@ -1,5 +1,15 @@
-import type { PlexItem } from "@server/clients/plex";
+import type { PlexItem, PlexScanIssue } from "@server/clients/plex/types";
 import type { MatchResult } from "@server/modules/matching/types";
+
+export interface ScanReport {
+  scanned: number;
+  queued: number;
+  skipped: number;
+  failedItems: number;
+  failedLibraries: number;
+  issues: PlexScanIssue[];
+  issuesOmitted: number;
+}
 
 export interface SyncPayload {
   item: PlexItem;

@@ -13,18 +13,19 @@ import { JobsService } from "@server/modules/jobs/service";
 import type { EnqueueInput, Job } from "@server/modules/jobs/types";
 import {
   BlockedTitle,
-  MatchingService,
   NeedsConfirmation,
-} from "@server/modules/matching/service";
+} from "@server/modules/matching/errors";
+import { MatchingService } from "@server/modules/matching/service";
 import { PlexService } from "@server/modules/plex/service";
 import { SettingsService } from "@server/modules/settings/service";
-import type { SyncPayload } from "@server/modules/sync/types";
-import { parseSyncPayload } from "@server/modules/sync/utils";
+import { ScanIncomplete } from "@server/tasks/errors";
+import type { ScanReport, SyncPayload } from "@server/tasks/types";
+import { parseSyncPayload } from "@server/tasks/utils";
 import type { AppContext } from "@server/types";
 import { AppError, RemoteError } from "@server/utils/errors";
 import { tokenDigest } from "@server/utils/secrets";
 
-export abstract class SyncService {
+export abstract class TaskService {
   static async runOne(
     context: AppContext,
     owner: string = crypto.randomUUID(),
@@ -33,7 +34,7 @@ export abstract class SyncService {
 
     if (!job) return false;
 
-    await SyncService.execute(context, job, owner);
+    await TaskService.execute(context, job, owner);
 
     return true;
   }
@@ -54,10 +55,10 @@ export abstract class SyncService {
           );
           break;
         case "plex-scan":
-          result = await SyncService.scan(context, job, owner);
+          result = await TaskService.scan(context, job, owner);
           break;
         case "sync":
-          result = await SyncService.sync(context, job, owner);
+          result = await TaskService.sync(context, job, owner);
           break;
         default:
           throw new AppError(400, "UNKNOWN_JOB", "任务类型不受支持");
@@ -66,10 +67,12 @@ export abstract class SyncService {
       JobsService.complete(context, job.id, owner, result);
     } catch (error) {
       const retryable =
-        error instanceof RemoteError
-          ? error.remoteStatus === 429 || error.remoteStatus >= 500
-          : error instanceof AppError &&
-            ["REMOTE_UNREACHABLE", "MATCH_DEADLINE"].includes(error.code);
+        error instanceof ScanIncomplete
+          ? error.retryable
+          : error instanceof RemoteError
+            ? error.remoteStatus === 429 || error.remoteStatus >= 500
+            : error instanceof AppError &&
+              ["REMOTE_UNREACHABLE", "MATCH_DEADLINE"].includes(error.code);
 
       JobsService.fail(
         context,
@@ -79,7 +82,9 @@ export abstract class SyncService {
           ? error.message
           : "任务执行失败，请检查数据和配置",
         retryable,
-        error instanceof RemoteError ? error.retryAfter : undefined,
+        error instanceof RemoteError || error instanceof ScanIncomplete
+          ? error.retryAfter
+          : undefined,
       );
     } finally {
       clearInterval(heartbeat);
@@ -110,68 +115,120 @@ export abstract class SyncService {
     JobsService.reportProgress(context, job.id, owner, "正在连接 Plex");
     const server = await client.identity();
     const scope = tokenDigest(JSON.stringify([server.id, source.userName]));
-    let queued = 0;
-    let skipped = 0;
-    let scanned = 0;
+    const report: ScanReport = {
+      scanned: 0,
+      queued: 0,
+      skipped: 0,
+      failedItems: 0,
+      failedLibraries: 0,
+      issues: [],
+      issuesOmitted: 0,
+    };
+    let retryable = false;
+    let retryAfter = 0;
     let lastProgress = 0;
     let batch: EnqueueInput[] = [];
+    const progress = () =>
+      `已扫描 ${report.scanned} 项，新增 ${report.queued} 项，跳过 ${report.skipped} 项；${report.failedItems} 条数据异常，${report.failedLibraries} 个媒体库未完成`;
     const flush = async () => {
-      const added = JobsService.enqueueBatch(context, batch);
-      queued += added;
-      skipped += batch.length - added;
+      transaction(
+        context.database,
+        () => {
+          // Check the lease in the same transaction as enqueuing the batch.
+          JobsService.reportProgress(context, job.id, owner, progress(), {
+            scan: report,
+          });
+          const added = JobsService.enqueueBatch(context, batch);
+          report.queued += added;
+          report.skipped += batch.length - added;
+          JobsService.reportProgress(context, job.id, owner, progress(), {
+            scan: report,
+          });
+        },
+        "immediate",
+      );
       batch = [];
       await Bun.sleep(0);
     };
     JobsService.reportProgress(context, job.id, owner, "正在扫描媒体库");
 
-    for await (const item of client.watched(source.libraryIds)) {
-      scanned++;
-      if (scanned % 25 === 0) await flush();
-      for (const account of targets) {
-        if (
-          !job.payload.full &&
-          SyncService.wasWatched(context, scope, item.ratingKey, account.id)
-        ) {
-          skipped++;
-
+    const iterator = client.watched(source.libraryIds);
+    try {
+      while (true) {
+        let next: Awaited<ReturnType<typeof iterator.next>>;
+        try {
+          next = await iterator.next();
+        } catch (error) {
+          // Preserve the valid tail on any read failure. Queue/database errors
+          // occur outside this catch and must never cause a second write attempt.
+          await flush();
+          throw error;
+        }
+        if (next.done) break;
+        const event = next.value;
+        if (event.type === "issue") {
+          if (event.issue.scope === "item") {
+            report.scanned++;
+            report.failedItems++;
+          } else report.failedLibraries++;
+          if (report.issues.length < 100) report.issues.push(event.issue);
+          else report.issuesOmitted++;
+          retryable ||= event.issue.retryable;
+          retryAfter = Math.max(retryAfter, event.issue.retryAfter);
+          await flush();
           continue;
         }
+        const item = event.item;
+        report.scanned++;
+        for (const account of targets) {
+          if (
+            !job.payload.full &&
+            TaskService.wasWatched(context, scope, item.ratingKey, account.id)
+          ) {
+            report.skipped++;
 
-        const payload: SyncPayload = {
-          item,
-          scope,
-          userName: source.userName,
-          accountId: account.id,
-          action: "watched",
-          source: "plex_poll",
-          plexAccountId: source.id,
-          plexAccountName: source.name,
-          full: job.payload.full === true,
-        };
+            continue;
+          }
 
-        batch.push({
-          kind: "sync",
-          dedupeKey: `sync:${scope}:${item.ratingKey}:${account.id}:watched`,
-          payload: { ...payload },
-          maxAttempts: config.scheduler.maxAttempts,
-        });
+          const payload: SyncPayload = {
+            item,
+            scope,
+            userName: source.userName,
+            accountId: account.id,
+            action: "watched",
+            source: "plex_poll",
+            plexAccountId: source.id,
+            plexAccountName: source.name,
+            full: job.payload.full === true,
+          };
 
-        if (batch.length >= 50) await flush();
+          batch.push({
+            kind: "sync",
+            dedupeKey: `sync:${scope}:${item.ratingKey}:${account.id}:watched`,
+            payload: { ...payload },
+            maxAttempts: config.scheduler.maxAttempts,
+          });
+
+          if (batch.length >= 50) await flush();
+        }
+
+        if (report.scanned % 25 === 0) await flush();
+
+        if (Date.now() - lastProgress >= 500) {
+          JobsService.reportProgress(context, job.id, owner, progress(), {
+            scan: report,
+          });
+          lastProgress = Date.now();
+        }
       }
-
-      if (Date.now() - lastProgress >= 500) {
-        JobsService.reportProgress(
-          context,
-          job.id,
-          owner,
-          `已扫描 ${scanned} 项，新增 ${queued} 项，跳过 ${skipped} 项`,
-        );
-        lastProgress = Date.now();
-      }
+    } finally {
+      await iterator.return(undefined);
     }
 
     await flush();
-    return { queued, skipped };
+    if (report.failedItems || report.failedLibraries)
+      throw new ScanIncomplete(retryable, retryAfter);
+    return { queued: report.queued, skipped: report.skipped, scan: report };
   }
 
   private static async sync(context: AppContext, job: Job, owner: string) {
@@ -181,7 +238,7 @@ export abstract class SyncService {
     if (
       !payload.full &&
       action === "watched" &&
-      SyncService.wasWatched(context, scope, item.ratingKey, accountId)
+      TaskService.wasWatched(context, scope, item.ratingKey, accountId)
     )
       return { skipped: true, reason: "此账号已同步" };
 
@@ -255,7 +312,7 @@ export abstract class SyncService {
 
       const api = AccountService.client(context, accountId);
 
-      SyncService.assertLease(context, job.id, owner);
+      TaskService.assertLease(context, job.id, owner);
 
       JobsService.reportProgress(context, job.id, owner, "正在同步观看进度");
 
@@ -283,7 +340,7 @@ export abstract class SyncService {
       transaction(
         context.database,
         () => {
-          SyncService.assertLease(context, job.id, owner);
+          TaskService.assertLease(context, job.id, owner);
 
           if (action === "watched")
             insertWatched(context.database, {
@@ -325,7 +382,7 @@ export abstract class SyncService {
       transaction(
         context.database,
         () => {
-          SyncService.assertLease(context, job.id, owner);
+          TaskService.assertLease(context, job.id, owner);
           saveSyncRecord(context.database, {
             ...base,
             status: pending ? "pending" : "error",

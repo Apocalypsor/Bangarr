@@ -3,7 +3,7 @@ import { readPlexAccounts } from "@server/db/plex";
 import { CatalogService } from "@server/modules/catalog/service";
 import { JobsService } from "@server/modules/jobs/service";
 import { SettingsService } from "@server/modules/settings/service";
-import { SyncService } from "@server/modules/sync/service";
+import { TaskService } from "@server/tasks/service";
 import type { AppContext } from "@server/types";
 import type { SecretVault } from "@server/utils/secrets";
 import { Cron } from "croner";
@@ -66,7 +66,7 @@ export const startTasks = (database: AppDatabase, vault: SecretVault) => {
   const tick = () => {
     if (stopping || !ready || active) return;
 
-    active = SyncService.runOne(context, owner).finally(() => {
+    active = TaskService.runOne(context, owner).finally(() => {
       active = null;
     });
   };

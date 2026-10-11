@@ -32,12 +32,14 @@ const states = {
   waiting: "等待执行",
   running: "执行中",
   retrying: "等待重试",
+  failed: "失败 / 未完成",
 } as const;
 
 const stateVariants = {
   waiting: "warning",
   running: "info",
   retrying: "warning",
+  failed: "destructive",
 } as const;
 
 const kinds: Record<string, string> = {
@@ -63,6 +65,16 @@ export const TaskList = () => {
       unwrap(await api.api.jobs({ id }).cancel.post()),
     onSuccess: () => {
       toast.success("已取消");
+      void client.invalidateQueries({ queryKey: ["jobs"] });
+    },
+    onError: (error) => toast.error(error.message),
+  });
+
+  const retry = useMutation({
+    mutationFn: async (id: string) =>
+      unwrap(await api.api.jobs({ id }).retry.post()),
+    onSuccess: () => {
+      toast.success("已重新入队");
       void client.invalidateQueries({ queryKey: ["jobs"] });
     },
     onError: (error) => toast.error(error.message),
@@ -122,7 +134,7 @@ export const TaskList = () => {
           </SelectTrigger>
           <SelectContent>
             <SelectGroup>
-              <SelectItem value="all">全部状态</SelectItem>
+              <SelectItem value="all">进行中的任务</SelectItem>
               {Object.entries(states).map(([state, label]) => (
                 <SelectItem key={state} value={state}>
                   {label}
@@ -161,11 +173,13 @@ export const TaskList = () => {
                         job.state === "pending" && job.attempt > 0;
 
                       const state =
-                        job.state === "running"
-                          ? "running"
-                          : waitingRetry
-                            ? "retrying"
-                            : "waiting";
+                        job.state === "failed"
+                          ? "failed"
+                          : job.state === "running"
+                            ? "running"
+                            : waitingRetry
+                              ? "retrying"
+                              : "waiting";
 
                       return (
                         <TableRow key={job.id}>
@@ -195,6 +209,37 @@ export const TaskList = () => {
                                 {job.lastError}
                               </p>
                             )}
+                            {job.scan &&
+                              (job.scan.failedItems > 0 ||
+                                job.scan.failedLibraries > 0) && (
+                                <details className="mt-2">
+                                  <summary className="cursor-pointer">
+                                    扫描问题：{job.scan.failedItems}{" "}
+                                    条数据异常，{job.scan.failedLibraries}{" "}
+                                    个媒体库未完成
+                                  </summary>
+                                  <ul className="mt-2 flex flex-col gap-2">
+                                    {job.scan.issues.map((issue) => (
+                                      <li key={issue.id}>
+                                        {issue.libraryTitle} ·{" "}
+                                        {issue.title ||
+                                          (issue.scope === "item"
+                                            ? "未知项目"
+                                            : "媒体库")}
+                                        {issue.ratingKey &&
+                                          `（ID ${issue.ratingKey}）`}
+                                        ：{issue.message}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                  {job.scan.issuesOmitted > 0 && (
+                                    <p>
+                                      仅保留前 100 条详情，另有{" "}
+                                      {job.scan.issuesOmitted} 条问题。
+                                    </p>
+                                  )}
+                                </details>
+                              )}
                             {waitingRetry && (
                               <p className="text-muted-foreground">
                                 下次尝试：
@@ -221,6 +266,18 @@ export const TaskList = () => {
                                 onClick={() => cancel.mutate(job.id)}
                               >
                                 取消
+                              </Button>
+                            ) : job.state === "failed" &&
+                              !job.needsConfirmation ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                disabled={
+                                  retry.isPending && retry.variables === job.id
+                                }
+                                onClick={() => retry.mutate(job.id)}
+                              >
+                                重试
                               </Button>
                             ) : null}
                           </TableCell>

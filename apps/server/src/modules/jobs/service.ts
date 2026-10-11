@@ -17,7 +17,7 @@ import {
 } from "@server/db/jobs";
 import type { JobsQuery } from "@server/modules/jobs/model";
 import type { EnqueueInput, Job } from "@server/modules/jobs/types";
-import { taskProgress } from "@server/modules/jobs/utils";
+import { scanReport, taskProgress } from "@server/modules/jobs/utils";
 import type { AppContext } from "@server/types";
 import { AppError } from "@server/utils/errors";
 
@@ -268,6 +268,7 @@ export abstract class JobsService {
       items: page.items.map(({ result, ...job }) => ({
         ...job,
         progress: taskProgress(job.kind, job.state, result),
+        scan: job.kind === "plex-scan" ? scanReport(result) : null,
       })),
     };
   }
@@ -277,11 +278,12 @@ export abstract class JobsService {
     id: string,
     owner: string,
     progress: string,
+    details: Record<string, unknown> = {},
   ) {
     const now = (context.now ?? Date.now)();
     if (
       !checkpointJob(context.database, id, owner, now, {
-        result: { progress },
+        result: { ...details, progress },
         updatedAt: now,
       })
     ) {

@@ -1,6 +1,6 @@
-import type { PlexItem } from "@server/clients/plex";
+import type { PlexItem } from "@server/clients/plex/types";
 import type { MatchResult } from "@server/modules/matching/types";
-import type { SyncPayload } from "@server/modules/sync/types";
+import type { SyncPayload } from "@server/tasks/types";
 import { AppError } from "@server/utils/errors";
 
 export const parseSyncPayload = (

@@ -1,5 +1,6 @@
-import type { BangumiClient, BangumiSubject } from "@server/clients/bangumi";
-import type { PlexItem } from "@server/clients/plex";
+import type { BangumiClient } from "@server/clients/bangumi";
+import type { BangumiSubject } from "@server/clients/bangumi/types";
+import type { PlexItem } from "@server/clients/plex/types";
 import { CatalogStore } from "@server/db/catalog";
 import { transaction } from "@server/db/client";
 import {
@@ -16,6 +17,10 @@ import {
   upsertMapping,
 } from "@server/db/matching";
 import { JobsService } from "@server/modules/jobs/service";
+import {
+  BlockedTitle,
+  NeedsConfirmation,
+} from "@server/modules/matching/errors";
 import type {
   MappingInput,
   MatchCandidate,
@@ -54,21 +59,6 @@ type CandidateGroup = PendingCandidateDetail["candidate"] & {
   taskCount: number;
   tasks: (Omit<PendingCandidateDetail, "candidate"> & { jobId: string })[];
 };
-
-export class NeedsConfirmation extends AppError {
-  constructor(
-    public candidates: MatchCandidate[],
-    public trace: Record<string, unknown>[],
-  ) {
-    super(409, "NEEDS_CONFIRMATION", "匹配结果需要人工确认");
-  }
-}
-
-export class BlockedTitle extends AppError {
-  constructor() {
-    super(400, "BLOCKED_TITLE", "作品已被屏蔽");
-  }
-}
 
 export abstract class MatchingService {
   static async match(
@@ -328,7 +318,7 @@ export abstract class MatchingService {
     subjectId: number;
     episodeId: number;
   }> {
-    if (item.episode > 9999 || item.season > 100 || item.episode < 1)
+    if (item.episode > 9999 || item.season > 100 || item.episode < 0)
       throw new AppError(400, "EPISODE_RANGE", "季度或集数超出允许范围");
 
     const type = item.season === 0 ? 1 : 0;
@@ -488,7 +478,11 @@ export abstract class MatchingService {
     const dated = item.releaseDate
       ? chain.flatMap((entry) =>
           entry.episodes
-            .filter((ep) => ep.airdate === item.releaseDate)
+            .filter(
+              (ep) =>
+                ep.airdate === item.releaseDate &&
+                (item.episode !== 0 || ep.sort === 0),
+            )
             .map((ep) => ({ subjectId: entry.subject.id, episodeId: ep.id })),
         )
       : [];
