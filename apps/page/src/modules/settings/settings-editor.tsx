@@ -30,21 +30,7 @@ export const SettingsEditor = ({ initial }: SettingsEditorProps) => {
 
   const save = useMutation({
     mutationFn: async (submitted: Settings) => {
-      const latest = unwrap(await api.api.settings.get());
-
-      const value = {
-        ...latest,
-        sync: submitted.sync,
-        scheduler: submitted.scheduler,
-        bangumi: submitted.bangumi,
-      };
-
-      value.plex = {
-        ...value.plex,
-        libraryIds: value.plex.libraryIds
-          .map((id) => id.trim())
-          .filter(Boolean),
-      };
+      const value = structuredClone(submitted);
 
       value.sync = {
         ...value.sync,

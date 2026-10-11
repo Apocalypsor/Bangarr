@@ -1,44 +1,32 @@
-import type { PlexItem } from "@server/clients/plex/types";
-import type { MatchResult } from "@server/modules/matching/types";
-import type { SyncPayload } from "@server/tasks/types";
+import type { EnqueueInput } from "@server/modules/jobs/types";
+import { taskSchema } from "@server/tasks/model";
+import type { SyncPayload, Task } from "@server/tasks/types";
 import { AppError } from "@server/utils/errors";
+import { tokenDigest } from "@server/utils/secrets";
+import { TypeCompiler } from "@sinclair/typebox/compiler";
 
-export const parseSyncPayload = (
-  payload: Record<string, unknown>,
-): SyncPayload => {
-  const item = payload.item as PlexItem | undefined;
+const taskValidator = TypeCompiler.Compile(taskSchema);
 
-  if (
-    !item ||
-    typeof item.title !== "string" ||
-    typeof item.ratingKey !== "string" ||
-    !Number.isInteger(item.season) ||
-    !Number.isInteger(item.episode) ||
-    !["movie", "episode"].includes(item.mediaType) ||
-    typeof payload.accountId !== "string" ||
-    typeof payload.scope !== "string" ||
-    typeof payload.userName !== "string" ||
-    typeof payload.source !== "string" ||
-    (payload.plexAccountId !== undefined &&
-      typeof payload.plexAccountId !== "string") ||
-    !["watched", "watching"].includes(String(payload.action))
-  )
+export const parseTask = (value: unknown): Task => {
+  if (!taskValidator.Check(value))
     throw new AppError(400, "INVALID_JOB", "任务数据不完整");
-
-  if (payload.resolved !== undefined) {
-    const resolved = payload.resolved as Partial<MatchResult> | null;
-
-    if (
-      !resolved ||
-      !Number.isSafeInteger(resolved.subjectId) ||
-      Number(resolved.subjectId) < 1 ||
-      !Number.isSafeInteger(resolved.episodeId) ||
-      Number(resolved.episodeId) < (payload.action === "watching" ? 0 : 1) ||
-      !Array.isArray(resolved.trace) ||
-      typeof resolved.mapped !== "boolean"
-    )
-      throw new AppError(400, "INVALID_JOB", "任务匹配结果不完整");
-  }
-
-  return payload as unknown as SyncPayload;
+  if (value.kind === "sync" && !validResolvedEpisode(value.payload))
+    throw new AppError(400, "INVALID_JOB", "任务匹配结果不完整");
+  return { kind: value.kind, payload: value.payload } as Task;
 };
+
+export const plexScope = (serverId: string, userName: string) =>
+  tokenDigest(JSON.stringify([serverId, userName]));
+
+export const syncTask = (
+  payload: SyncPayload,
+  maxAttempts: number,
+): Extract<EnqueueInput, { kind: "sync" }> => ({
+  kind: "sync",
+  dedupeKey: `sync:${payload.scope}:${payload.item.ratingKey}:${payload.accountId}:${payload.action}`,
+  payload,
+  maxAttempts,
+});
+
+const validResolvedEpisode = (payload: SyncPayload) =>
+  payload.action !== "watched" || payload.resolved?.episodeId !== 0;

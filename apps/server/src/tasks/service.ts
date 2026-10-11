@@ -20,7 +20,7 @@ import { PlexService } from "@server/modules/plex/service";
 import { SettingsService } from "@server/modules/settings/service";
 import { ScanIncomplete } from "@server/tasks/errors";
 import type { ScanReport, SyncPayload } from "@server/tasks/types";
-import { parseSyncPayload } from "@server/tasks/utils";
+import { parseTask, plexScope, syncTask } from "@server/tasks/utils";
 import type { AppContext } from "@server/types";
 import { AppError, RemoteError } from "@server/utils/errors";
 import { tokenDigest } from "@server/utils/secrets";
@@ -46,9 +46,10 @@ export abstract class TaskService {
     );
 
     try {
+      const task = parseTask(job);
       let result: Record<string, unknown>;
 
-      switch (job.kind) {
+      switch (task.kind) {
         case "catalog-data":
           result = await CatalogService.refreshData(context, (message) =>
             JobsService.reportProgress(context, job.id, owner, message),
@@ -58,7 +59,7 @@ export abstract class TaskService {
           result = await TaskService.scan(context, job, owner);
           break;
         case "sync":
-          result = await TaskService.sync(context, job, owner);
+          result = await TaskService.sync(context, job, owner, task.payload);
           break;
         default:
           throw new AppError(400, "UNKNOWN_JOB", "任务类型不受支持");
@@ -114,7 +115,7 @@ export abstract class TaskService {
 
     JobsService.reportProgress(context, job.id, owner, "正在连接 Plex");
     const server = await client.identity();
-    const scope = tokenDigest(JSON.stringify([server.id, source.userName]));
+    const scope = plexScope(server.id, source.userName);
     const report: ScanReport = {
       scanned: 0,
       queued: 0,
@@ -202,12 +203,7 @@ export abstract class TaskService {
             full: job.payload.full === true,
           };
 
-          batch.push({
-            kind: "sync",
-            dedupeKey: `sync:${scope}:${item.ratingKey}:${account.id}:watched`,
-            payload: { ...payload },
-            maxAttempts: config.scheduler.maxAttempts,
-          });
+          batch.push(syncTask(payload, config.scheduler.maxAttempts));
 
           if (batch.length >= 50) await flush();
         }
@@ -231,8 +227,12 @@ export abstract class TaskService {
     return { queued: report.queued, skipped: report.skipped, scan: report };
   }
 
-  private static async sync(context: AppContext, job: Job, owner: string) {
-    const payload = parseSyncPayload(job.payload);
+  private static async sync(
+    context: AppContext,
+    job: Job,
+    owner: string,
+    payload: SyncPayload,
+  ) {
     const { item, accountId, scope, userName, source, action } = payload;
 
     if (
@@ -265,9 +265,7 @@ export abstract class TaskService {
 
       if (
         !account.enabled ||
-        !AccountService.bindings(context, account.plexUsers).includes(
-          payload.plexAccountId ?? "default",
-        )
+        !account.plexUsers.includes(payload.plexAccountId ?? "default")
       )
         throw new AppError(
           403,
@@ -284,8 +282,7 @@ export abstract class TaskService {
         if (
           sourceAccount.userName !== userName ||
           (sourceAccount.serverId &&
-            tokenDigest(JSON.stringify([sourceAccount.serverId, userName])) !==
-              scope)
+            plexScope(sourceAccount.serverId, userName) !== scope)
         ) {
           throw new AppError(
             409,
@@ -295,22 +292,21 @@ export abstract class TaskService {
         }
       }
 
+      const api = AccountService.client(
+        context,
+        account,
+        config.bangumi.apiUrl,
+      );
+
       // 保存匹配结果，重试时沿用已确认的目标。
       const match =
         payload.resolved ??
-        (await MatchingService.match(
-          context,
-          item,
-          AccountService.client(context, accountId),
-          config,
-        ));
+        (await MatchingService.match(context, item, api, config));
 
       JobsService.checkpoint(context, job.id, owner, {
         ...payload,
         resolved: match,
       });
-
-      const api = AccountService.client(context, accountId);
 
       TaskService.assertLease(context, job.id, owner);
 

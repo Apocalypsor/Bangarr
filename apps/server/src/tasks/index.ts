@@ -1,7 +1,7 @@
 import type { AppDatabase } from "@server/db/client";
 import { readPlexAccounts } from "@server/db/plex";
 import { CatalogService } from "@server/modules/catalog/service";
-import { JobsService } from "@server/modules/jobs/service";
+import { PlexService } from "@server/modules/plex/service";
 import { SettingsService } from "@server/modules/settings/service";
 import { TaskService } from "@server/tasks/service";
 import type { AppContext } from "@server/types";
@@ -37,18 +37,7 @@ export const startTasks = (database: AppDatabase, vault: SecretVault) => {
               account.cron,
               { timezone: config.scheduler.timezone, protect: true },
               () => {
-                JobsService.enqueue(context, {
-                  kind: "plex-scan",
-                  dedupeKey: `plex-scan:${account.id}`,
-                  payload: {
-                    full: false,
-                    plexAccountId: account.id,
-                    plexAccountName: account.name,
-                    userName: account.userName,
-                  },
-                  maxAttempts:
-                    SettingsService.read(context).scheduler.maxAttempts,
-                });
+                PlexService.scan(context, account.id);
               },
             ),
         );

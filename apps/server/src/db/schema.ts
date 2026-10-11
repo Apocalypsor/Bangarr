@@ -8,6 +8,8 @@ import {
   uniqueIndex,
 } from "drizzle-orm/sqlite-core";
 
+export const defaultJobMaxAttempts = 5;
+
 export const settings = sqliteTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
@@ -52,7 +54,9 @@ export const jobs = sqliteTable(
       enum: ["pending", "running", "succeeded", "failed", "cancelled"],
     }).notNull(),
     attempt: integer("attempt").notNull().default(0),
-    maxAttempts: integer("max_attempts").notNull().default(5),
+    maxAttempts: integer("max_attempts")
+      .notNull()
+      .default(defaultJobMaxAttempts),
     availableAt: integer("available_at").notNull(),
     leaseUntil: integer("lease_until"),
     leaseOwner: text("lease_owner"),
@@ -62,6 +66,7 @@ export const jobs = sqliteTable(
     updatedAt: integer("updated_at").notNull(),
   },
   (table) => [
+    index("jobs_dedupe_key").on(table.dedupeKey),
     index("jobs_ready").on(table.state, table.availableAt),
     uniqueIndex("jobs_active_key")
       .on(table.dedupeKey)
@@ -150,6 +155,8 @@ export const candidates = sqliteTable(
     createdAt: integer("created_at").notNull(),
   },
   (table) => [
+    index("candidates_job_state").on(table.jobId, table.state),
+    index("candidates_state").on(table.state),
     check(
       "candidates_state_check",
       sql`${table.state} IN ('pending', 'confirmed', 'rejected')`,

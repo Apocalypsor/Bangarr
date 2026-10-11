@@ -1,7 +1,7 @@
 import { getAccount } from "@server/db/accounts";
-import type { HistoryFilter } from "@server/db/records";
 import { getSyncRecord, listSyncRecords } from "@server/db/records";
 import { JobsService } from "@server/modules/jobs/service";
+import type { HistoryFilter } from "@server/modules/records/model";
 import type { AppContext } from "@server/types";
 import { AppError } from "@server/utils/errors";
 
@@ -62,23 +62,19 @@ export abstract class RecordsService {
     if (record.status === "success")
       throw new AppError(409, "RECORD_SUCCEEDED", "此记录已同步成功");
 
-    if (!record.jobId || !JobsService.get(context, record.jobId))
+    const job = record.jobId
+      ? JobsService.get(context, record.jobId)
+      : undefined;
+    if (!job)
       throw new AppError(
         409,
         "RECORD_JOB_MISSING",
         "无法重试此记录，请重新扫描 Plex",
       );
 
-    const job = JobsService.get(context, record.jobId);
-
     if (record.status === "ignored" && job?.state === "succeeded")
-      return JobsService.enqueue(context, {
-        kind: job.kind,
-        dedupeKey: job.dedupeKey,
-        payload: job.payload,
-        maxAttempts: job.maxAttempts,
-      });
+      return JobsService.requeue(context, job);
 
-    return JobsService.retry(context, record.jobId);
+    return JobsService.retry(context, job.id);
   }
 }

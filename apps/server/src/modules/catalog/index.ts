@@ -1,5 +1,5 @@
 import { CatalogStore } from "@server/db/catalog";
-import { JobsService } from "@server/modules/jobs/service";
+import { CatalogService } from "@server/modules/catalog/service";
 import { sessionGuard } from "@server/plugins/auth";
 import type { AppContext } from "@server/types";
 import { Elysia } from "elysia";
@@ -14,10 +14,5 @@ export const catalogRoutes = (context: AppContext) =>
     .post("/update", ({ set }) => {
       set.status = 202;
 
-      return JobsService.enqueue(context, {
-        kind: "catalog-data",
-        dedupeKey: "catalog-data",
-        payload: {},
-        maxAttempts: 3,
-      });
+      return CatalogService.enqueue(context);
     });

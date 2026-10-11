@@ -1,4 +1,7 @@
-import type { mappingSchema } from "@server/modules/matching/model";
+import type {
+  mappingSchema,
+  matchResultSchema,
+} from "@server/modules/matching/model";
 
 export type MappingInput = typeof mappingSchema.static;
 
@@ -12,9 +15,4 @@ export interface MatchCandidate {
   dateMatched?: boolean;
 }
 
-export interface MatchResult {
-  subjectId: number;
-  episodeId: number;
-  trace: Record<string, unknown>[];
-  mapped: boolean;
-}
+export type MatchResult = typeof matchResultSchema.static;

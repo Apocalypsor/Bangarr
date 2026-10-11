@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createApp } from "@server/app";
-import { readPlexAccounts } from "@server/db/plex";
+import { migratePlexSettings, readPlexAccounts } from "@server/db/plex";
 import { accounts } from "@server/db/schema";
 import { AccountService } from "@server/modules/accounts/service";
 import { JobsService } from "@server/modules/jobs/service";
@@ -146,9 +146,16 @@ test("Plex accounts isolate tokens, scans and webhook bindings across servers", 
 
 test("existing single-Plex credentials and bindings survive edits and deleting all accounts", async () => {
   const context = fixture();
-  const config = SettingsService.read(context);
-  config.plex = source("legacy.test");
-  SettingsService.save(context, config);
+  SettingsService.set(
+    context,
+    "app",
+    JSON.stringify({
+      plex: {
+        ...source("legacy.test"),
+        token: context.vault.seal("token-legacy.test"),
+      },
+    }),
+  );
   context.database.orm
     .insert(accounts)
     .values({
@@ -159,6 +166,7 @@ test("existing single-Plex credentials and bindings survive edits and deleting a
       createdAt: 0,
     })
     .run();
+  migratePlexSettings(context.database);
   expect(PlexService.get(context, "default").token).toBe("token-legacy.test");
   expect(AccountService.list(context)[0]?.plexUsers).toEqual(["default"]);
   await PlexService.save(
@@ -192,6 +200,26 @@ test("new Plex management endpoints require authentication", async () => {
     );
     expect(response.status).toBe(401);
   }
+});
+
+test("Plex account updates own schedule validation and preserve omitted credentials", async () => {
+  const context = fixture();
+  const first = await PlexService.save(context, source("schedule.test"));
+  if (!first) throw new Error("Missing account");
+  const update = { ...source("schedule.test"), token: "", cron: "0 * * * *" };
+  await PlexService.save(context, update, first.id);
+  expect(PlexService.get(context, first.id)).toMatchObject({
+    cron: "0 * * * *",
+    token: "token-schedule.test",
+  });
+  expect(JSON.stringify(PlexService.list(context))).not.toContain(
+    "token-schedule.test",
+  );
+  await expect(
+    PlexService.save(context, { ...update, cron: "broken" }, first.id),
+  ).rejects.toThrow("扫描频率");
+  expect(PlexService.get(context, first.id).cron).toBe("0 * * * *");
+  expect(SettingsService.read(context)).not.toHaveProperty("plex");
 });
 
 test("bulk scans yield to API requests while durably batching thousands of jobs", async () => {

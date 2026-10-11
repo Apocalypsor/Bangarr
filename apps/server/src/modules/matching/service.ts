@@ -28,15 +28,16 @@ import type {
 } from "@server/modules/matching/types";
 import {
   conflictingEpisodeDate,
+  currentTitleDate,
+  episodeDateConflicts,
   findEpisode,
   isMovie,
   mergeSubject,
-  selectDatedSubject,
+  selectCandidate,
   subjectAliases,
 } from "@server/modules/matching/utils/candidates";
 import type { EpisodeSegment } from "@server/modules/matching/utils/episodes";
 import {
-  dateDistance,
   findCumulativeEpisode,
   findDatedEpisode,
   findLocalEpisode,
@@ -48,6 +49,7 @@ import {
   normalizeTitle,
   seasonNumbers,
   similarity,
+  titleNames,
 } from "@server/modules/matching/utils/title";
 import type { Settings } from "@server/modules/settings/model";
 import { SettingsService } from "@server/modules/settings/service";
@@ -72,13 +74,7 @@ export abstract class MatchingService {
     const trace: Record<string, unknown>[] = [];
     const rules = findSeasonMappings(context.database, item.season);
 
-    const names = [
-      ...new Set(
-        [item.title, item.originalTitle]
-          .map((value) => value.trim())
-          .filter(Boolean),
-      ),
-    ];
+    const names = titleNames(item.title, item.originalTitle);
 
     const mapping = [item.season, -1].flatMap((season) =>
       names.flatMap((name) =>
@@ -148,13 +144,7 @@ export abstract class MatchingService {
     config: Settings,
     trace: Record<string, unknown>[] = [],
   ): Promise<MatchCandidate> {
-    const names = [
-      ...new Set(
-        [item.title, item.originalTitle]
-          .map((value) => value.trim())
-          .filter(Boolean),
-      ),
-    ];
+    const names = titleNames(item.title, item.originalTitle);
 
     const subjects = new Map<number, BangumiSubject>();
 
@@ -189,7 +179,7 @@ export abstract class MatchingService {
       (subject) =>
         exactIds.has(subject.id) &&
         subject.date &&
-        (dateDistance(subject.date, item.releaseDate) ?? Infinity) <= 180,
+        currentTitleDate(subject.date, item.releaseDate),
     );
     if (exactIds.size !== 1 || (item.releaseDate && !datedLocalMatch)) {
       for (const name of names)
@@ -260,104 +250,17 @@ export abstract class MatchingService {
     scored.sort((a, b) => b.score - a.score || a.id - b.id);
     trace.push({ step: "search", names, candidates: scored });
 
-    const exact = scored.filter((row) => row.score === 1);
-
-    const catalogDate = selectDatedSubject(
+    const selected = selectCandidate(
       scored,
       subjects,
       names,
       item.releaseDate,
+      config.sync,
     );
-    if (catalogDate === null)
-      throw new NeedsConfirmation(scored.slice(0, 10), [
-        ...trace,
-        {
-          step: "date-disambiguation",
-          reason: "多个相关条目的放送日期同样接近，无法唯一确认",
-        },
-      ]);
-
-    if (catalogDate) {
-      trace.push({
-        step: "date-disambiguation",
-        method: catalogDate.method,
-        subjectId: catalogDate.candidate.id,
-        days: catalogDate.days,
-      });
-      return { ...catalogDate.candidate, dateMatched: catalogDate.days <= 180 };
-    }
-
-    const dated = (
-      exact.length
-        ? exact
-        : scored.filter(
-            (row) =>
-              row.score >=
-              Math.max(
-                config.sync.confidence,
-                (scored[0]?.score ?? 0) - config.sync.minMargin,
-              ),
-          )
-    )
-      .map((row) => ({
-        row,
-        days:
-          item.releaseDate && row.date
-            ? dateDistance(row.date, item.releaseDate)
-            : null,
-      }))
-      .filter(
-        (
-          entry,
-        ): entry is {
-          row: MatchCandidate;
-          days: number;
-        } => entry.days !== null,
-      )
-      .sort((a, b) => a.days - b.days);
-
-    if (dated[0] && dated[0].days <= 7 && (!dated[1] || dated[1].days > 14)) {
-      trace.push({
-        step: "date-disambiguation",
-        subjectId: dated[0].row.id,
-        days: dated[0].days,
-      });
-
-      return dated[0].row;
-    }
-
-    if (exact.length === 1) {
-      if (
-        item.releaseDate &&
-        exact[0]?.date &&
-        (dateDistance(exact[0].date, item.releaseDate) ?? 0) > 365
-      )
-        throw new NeedsConfirmation(scored.slice(0, 10), [
-          ...trace,
-          {
-            step: "date-disambiguation",
-            reason:
-              "同名条目的放送日期相差超过一年，未找到日期与名称均相符的候选",
-          },
-        ]);
-      trace.push({ step: "unique-exact-title", subjectId: exact[0]?.id });
-
-      return exact[0] as MatchCandidate;
-    }
-
-    const first = scored[0];
-    const second = scored[1];
-
-    if (
-      !first ||
-      first.score < config.sync.confidence ||
-      (second &&
-        (first.score === second.score ||
-          first.score - second.score < config.sync.minMargin))
-    )
+    trace.push(...selected.trace);
+    if (!selected.candidate)
       throw new NeedsConfirmation(scored.slice(0, 10), trace);
-
-    return first;
+    return selected.candidate;
   }
 
   static async resolveEpisode(
@@ -461,10 +364,7 @@ export abstract class MatchingService {
       item.releaseDate,
     );
 
-    const conflictingDate =
-      selected?.airdate &&
-      item.releaseDate &&
-      (dateDistance(selected.airdate, item.releaseDate) ?? 0) > 45;
+    const conflictingDate = episodeDateConflicts(selected, item.releaseDate);
 
     if (selected && !conflictingDate && (seasonMatched || item.season <= 1)) {
       trace.push({
@@ -799,12 +699,7 @@ export abstract class MatchingService {
                 "无法重试此匹配，请重新扫描 Plex",
               );
 
-            JobsService.enqueue(context, {
-              kind: job.kind,
-              dedupeKey: job.dedupeKey,
-              payload: job.payload,
-              maxAttempts: job.maxAttempts,
-            });
+            JobsService.requeue(context, job);
           }
         } else {
           const settings = SettingsService.read(context);

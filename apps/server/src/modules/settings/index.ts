@@ -9,7 +9,7 @@ export const settingsRoutes = (context: AppContext) =>
 
     .use(sessionGuard(context))
 
-    .get("", () => SettingsService.public(context))
+    .get("", () => SettingsService.read(context))
 
     .put("", ({ body }) => SettingsService.save(context, body), {
       body: settingsSchema,

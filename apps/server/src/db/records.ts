@@ -1,18 +1,7 @@
 import type { AppDatabase } from "@server/db/client";
 import { candidates, jobs, records, watched } from "@server/db/schema";
+import type { HistoryFilter } from "@server/modules/records/model";
 import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
-
-export interface HistoryFilter {
-  status?: string;
-  search?: string;
-  accountId?: string;
-  userName?: string;
-  mediaType?: string;
-  from?: number;
-  to?: number;
-  limit?: number;
-  offset?: number;
-}
 
 export const insertWatched = (
   database: AppDatabase,

@@ -16,15 +16,17 @@ import type { AppContext } from "@server/types";
 import { AppError } from "@server/utils/errors";
 import { randomToken, tokenDigest } from "@server/utils/secrets";
 
+const passwordOptions = {
+  algorithm: "argon2id",
+  memoryCost: 19456,
+  timeCost: 2,
+} as const;
+
 export abstract class AuthService {
   static initialize(context: Pick<AppContext, "database">) {
     if (getAdministrator(context.database)) return;
 
-    const passwordHash = Bun.password.hashSync("admin", {
-      algorithm: "argon2id",
-      memoryCost: 19456,
-      timeCost: 2,
-    });
+    const passwordHash = Bun.password.hashSync("admin", passwordOptions);
 
     transaction(
       context.database,
@@ -61,11 +63,10 @@ export abstract class AuthService {
     if (!username)
       throw new AppError(400, "USERNAME_REQUIRED", "用户名不能为空");
 
-    const passwordHash = await Bun.password.hash(input.newPassword, {
-      algorithm: "argon2id",
-      memoryCost: 19456,
-      timeCost: 2,
-    });
+    const passwordHash = await Bun.password.hash(
+      input.newPassword,
+      passwordOptions,
+    );
 
     return transaction(
       context.database,

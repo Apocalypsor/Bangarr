@@ -10,10 +10,11 @@ import type {
   PlexAccountInput,
   PlexConnectionInput,
 } from "@server/modules/plex/model";
-import { isObject } from "@server/modules/plex/utils";
 import { SettingsService } from "@server/modules/settings/service";
+import { plexScope, syncTask } from "@server/tasks/utils";
 import type { AppContext } from "@server/types";
 import { AppError } from "@server/utils/errors";
+import { isObject } from "@server/utils/objects";
 import { tokenDigest } from "@server/utils/secrets";
 import { validateHttpUrl } from "@server/utils/url";
 import { Cron } from "croner";
@@ -94,7 +95,6 @@ export abstract class PlexService {
     transaction(
       context.database,
       () => {
-        AccountService.materializeBindings(context);
         const accounts = readPlexAccounts(context.database);
         if (id && !accounts.some((row) => row.id === id))
           throw new AppError(404, "PLEX_ACCOUNT_MISSING", "Plex 账号不存在");
@@ -133,7 +133,6 @@ export abstract class PlexService {
       context.database,
       () => {
         PlexService.get(context, id);
-        AccountService.materializeBindings(context);
         writePlexAccounts(
           context.database,
           readPlexAccounts(context.database).filter((row) => row.id !== id),
@@ -296,25 +295,28 @@ export abstract class PlexService {
     if (!targets.length)
       throw new AppError(403, "NO_ACCOUNT", "此 Plex 用户未绑定 Bangumi 账号");
 
-    const scope = tokenDigest(JSON.stringify([serverId, userName]));
+    const scope = plexScope(serverId, userName);
 
+    const source = PlexService.get(context, plexAccountId);
+    const config = SettingsService.read(context);
     const ids = targets.map(
       (account) =>
-        JobsService.enqueue(context, {
-          kind: "sync",
-          dedupeKey: `sync:${scope}:${item.ratingKey}:${account.id}:${action}`,
-          payload: {
-            item,
-            scope,
-            userName,
-            accountId: account.id,
-            action,
-            source: "plex",
-            plexAccountId,
-            plexAccountName: PlexService.get(context, plexAccountId).name,
-          },
-          maxAttempts: SettingsService.read(context).scheduler.maxAttempts,
-        }).job.id,
+        JobsService.enqueue(
+          context,
+          syncTask(
+            {
+              item,
+              scope,
+              userName,
+              accountId: account.id,
+              action,
+              source: "plex",
+              plexAccountId,
+              plexAccountName: source.name,
+            },
+            config.scheduler.maxAttempts,
+          ),
+        ).job.id,
     );
 
     return { accepted: true, jobIds: ids };

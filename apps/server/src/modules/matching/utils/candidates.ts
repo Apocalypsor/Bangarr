@@ -9,6 +9,114 @@ import {
   findLocalEpisode,
 } from "@server/modules/matching/utils/episodes";
 import { normalizeTitle } from "@server/modules/matching/utils/title";
+import type { Settings } from "@server/modules/settings/model";
+
+const exactTitleMaxDays = 180;
+const partialTitleMaxDays = 90;
+const catalogMaxDays = 365;
+
+export const currentTitleDate = (date: string, releaseDate: string) =>
+  (dateDistance(date, releaseDate) ?? Infinity) <= exactTitleMaxDays;
+
+export const selectCandidate = (
+  scored: MatchCandidate[],
+  subjects: Map<number, BangumiSubject>,
+  names: string[],
+  releaseDate: string,
+  config: Pick<Settings["sync"], "confidence" | "minMargin">,
+) => {
+  const trace: Record<string, unknown>[] = [];
+  const exact = scored.filter((row) => row.score === 1);
+
+  const catalogDate = selectDatedSubject(scored, subjects, names, releaseDate);
+  if (catalogDate === null)
+    return {
+      candidate: undefined,
+      trace: [
+        ...trace,
+        {
+          step: "date-disambiguation",
+          reason: "多个相关条目的放送日期同样接近，无法唯一确认",
+        },
+      ],
+    };
+
+  if (catalogDate) {
+    trace.push({
+      step: "date-disambiguation",
+      method: catalogDate.method,
+      subjectId: catalogDate.candidate.id,
+      days: catalogDate.days,
+    });
+    return {
+      candidate: {
+        ...catalogDate.candidate,
+        dateMatched: catalogDate.days <= exactTitleMaxDays,
+      },
+      trace,
+    };
+  }
+
+  const dated = candidatesByDate(
+    exact.length
+      ? exact
+      : scored.filter(
+          (row) =>
+            row.score >=
+            Math.max(
+              config.confidence,
+              (scored[0]?.score ?? 0) - config.minMargin,
+            ),
+        ),
+    releaseDate,
+  );
+
+  if (dated[0] && dated[0].days <= 7 && (!dated[1] || dated[1].days > 14)) {
+    trace.push({
+      step: "date-disambiguation",
+      subjectId: dated[0].candidate.id,
+      days: dated[0].days,
+    });
+
+    return { candidate: dated[0].candidate, trace };
+  }
+
+  if (exact.length === 1) {
+    if (
+      releaseDate &&
+      exact[0]?.date &&
+      (dateDistance(exact[0].date, releaseDate) ?? 0) > catalogMaxDays
+    )
+      return {
+        candidate: undefined,
+        trace: [
+          ...trace,
+          {
+            step: "date-disambiguation",
+            reason:
+              "同名条目的放送日期相差超过一年，未找到日期与名称均相符的候选",
+          },
+        ],
+      };
+    trace.push({ step: "unique-exact-title", subjectId: exact[0]?.id });
+
+    return { candidate: exact[0], trace };
+  }
+
+  const first = scored[0];
+  const second = scored[1];
+
+  if (
+    !first ||
+    first.score < config.confidence ||
+    (second &&
+      (first.score === second.score ||
+        first.score - second.score < config.minMargin))
+  )
+    return { candidate: undefined, trace };
+
+  return { candidate: first, trace };
+};
 
 // Bangumi-syncer: nearest exact title within 180 days; otherwise search
 // name-related partial titles within 90 days. Never use a date alone as identity.
@@ -20,24 +128,20 @@ export const selectDatedSubject = (
   releaseDate: string,
 ) => {
   if (!releaseDate) return undefined;
-  const dated = candidates
-    .flatMap((candidate) => {
-      const days = dateDistance(candidate.date, releaseDate);
-      return days === null ? [] : [{ candidate, days }];
-    })
-    .sort((a, b) => a.days - b.days);
+  const dated = candidatesByDate(candidates, releaseDate);
   const exact = dated.filter(({ candidate }) => candidate.score === 1);
   const nearest = exact[0];
 
-  if (nearest && nearest.days <= 180)
+  if (nearest && nearest.days <= exactTitleMaxDays)
     return exact[1]?.days === nearest.days
       ? null
       : { ...nearest, method: "exact-title-date" };
 
-  if (nearest && nearest.days > 180) {
+  if (nearest && nearest.days > exactTitleMaxDays) {
     const partial = dated.filter(({ candidate, days }) => {
       const subject = subjects.get(candidate.id);
-      if (candidate.score === 1 || days > 90 || !subject) return false;
+      if (candidate.score === 1 || days > partialTitleMaxDays || !subject)
+        return false;
       return (
         referencePartialScore(subject, names, days) >= 0.8 ||
         subjectAliases(subject).some((alias) =>
@@ -63,7 +167,7 @@ export const selectDatedSubject = (
   }
 
   // The reference rejects distant catalog matches beyond its 365-day guard.
-  if (nearest && nearest.days <= 365)
+  if (nearest && nearest.days <= catalogMaxDays)
     return exact[1]?.days === nearest.days
       ? null
       : { ...nearest, method: "exact-title-date" };
@@ -166,11 +270,7 @@ export const conflictingEpisodeDate = (
     .find((entry) => entry.subject.id === target.subjectId)
     ?.episodes.find((ep) => ep.id === target.episodeId);
 
-  return (
-    episode?.airdate &&
-    releaseDate &&
-    (dateDistance(episode.airdate, releaseDate) ?? 0) > 45
-  );
+  return episodeDateConflicts(episode, releaseDate);
 };
 
 export const subjectAliases = (subject: BangumiSubject) => {
@@ -213,3 +313,21 @@ export const isMovie = (subject: BangumiSubject | undefined) =>
         `${subject.platform ?? ""} ${subject.name} ${subject.name_cn}`,
       ),
   );
+
+export const episodeDateConflicts = (
+  episode: BangumiEpisode | undefined,
+  releaseDate: string,
+) =>
+  Boolean(
+    episode?.airdate &&
+      releaseDate &&
+      (dateDistance(episode.airdate, releaseDate) ?? 0) > 45,
+  );
+
+const candidatesByDate = (candidates: MatchCandidate[], releaseDate: string) =>
+  candidates
+    .flatMap((candidate) => {
+      const days = dateDistance(candidate.date, releaseDate);
+      return days === null ? [] : [{ candidate, days }];
+    })
+    .sort((a, b) => a.days - b.days);

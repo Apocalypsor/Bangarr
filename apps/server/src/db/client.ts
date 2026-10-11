@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { migratePlexSettings } from "@server/db/plex";
 import * as schema from "@server/db/schema";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 
@@ -35,6 +36,14 @@ export const openDatabase = (path: string) => {
           .get();
 
         if (!initialized) sqlite.exec(initialSchema);
+        else {
+          // Add missing indexes to existing installations using the generated
+          // schema as the sole definition. Never recreate tables or user data.
+          for (const [statement] of initialSchema.matchAll(
+            /CREATE (?:UNIQUE )?INDEX [^;]+;/g,
+          ))
+            sqlite.exec(statement.replace("INDEX ", "INDEX IF NOT EXISTS "));
+        }
       })
       .immediate();
   } catch (error) {
@@ -43,12 +52,20 @@ export const openDatabase = (path: string) => {
     throw error;
   }
 
-  return {
+  const database = {
     path,
     sqlite,
     orm: drizzle(sqlite, { schema }),
     close: () => sqlite.close(),
   };
+
+  try {
+    migratePlexSettings(database);
+    return database;
+  } catch (error) {
+    sqlite.close();
+    throw error;
+  }
 };
 
 export const transaction = <T>(

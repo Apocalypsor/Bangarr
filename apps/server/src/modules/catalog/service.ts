@@ -132,6 +132,15 @@ export abstract class CatalogService {
     }
   }
 
+  static enqueue(context: AppContext) {
+    return JobsService.enqueue(context, {
+      kind: "catalog-data",
+      dedupeKey: "catalog-data",
+      payload: {},
+      maxAttempts: 3,
+    });
+  }
+
   static maintain(context: AppContext) {
     const config = SettingsService.read(context).bangumi;
 
@@ -146,12 +155,7 @@ export abstract class CatalogService {
 
     if (last && now - last < 3600000) return;
 
-    JobsService.enqueue(context, {
-      kind: "catalog-data",
-      dedupeKey: "catalog-data",
-      payload: {},
-      maxAttempts: 3,
-    });
+    CatalogService.enqueue(context);
     SettingsService.set(context, "catalog-auto:data", String(now));
   }
 }

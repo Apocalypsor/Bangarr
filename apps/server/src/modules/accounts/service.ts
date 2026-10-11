@@ -17,7 +17,6 @@ export abstract class AccountService {
     return listAccounts(context.database).map(
       ({ accessToken, ...account }) => ({
         ...account,
-        plexUsers: AccountService.bindings(context, account.plexUsers),
         tokenConfigured: Boolean(accessToken),
       }),
     );
@@ -32,54 +31,28 @@ export abstract class AccountService {
     return account;
   }
 
-  static client(context: AppContext, id: string) {
-    const account = AccountService.get(context, id);
-
+  static client(
+    context: AppContext,
+    account: NonNullable<ReturnType<typeof getAccount>>,
+    apiUrl: string,
+  ) {
     return new BangumiClient(
-      SettingsService.read(context).bangumi.apiUrl,
+      apiUrl,
       context.vault.open(account.accessToken),
       context.transport ?? fetch,
       account.username,
     );
   }
 
-  static targets(context: AppContext, plexUser: string) {
+  static targets(context: AppContext, plexAccountId: string) {
     return listEnabledAccounts(context.database).filter((account) =>
-      AccountService.bindings(context, account.plexUsers).includes(plexUser),
+      account.plexUsers.includes(plexAccountId),
     );
-  }
-
-  static bindings(context: AppContext, values: string[]) {
-    const sources = readPlexAccounts(context.database);
-    return [
-      ...new Set(
-        values.flatMap((value) => {
-          if (sources.some((source) => source.id === value)) return [value];
-          const legacy = sources.find(
-            (source) => source.id === "default" && source.userName === value,
-          );
-          return [legacy?.id ?? value];
-        }),
-      ),
-    ];
-  }
-
-  static materializeBindings(context: AppContext) {
-    for (const account of listAccounts(context.database)) {
-      const plexUsers = AccountService.bindings(context, account.plexUsers);
-      if (JSON.stringify(plexUsers) !== JSON.stringify(account.plexUsers)) {
-        upsertAccount(
-          context.database,
-          { plexUsers },
-          { ...account, plexUsers },
-        );
-      }
-    }
   }
 
   static async save(context: AppContext, input: AccountInput, id?: string) {
     const existing = id ? AccountService.get(context, id) : null;
-    const plexUsers = AccountService.bindings(context, input.plexUsers);
+    const plexUsers = [...new Set(input.plexUsers)];
     const sources = readPlexAccounts(context.database);
     if (
       plexUsers.some((value) => !sources.some((source) => source.id === value))

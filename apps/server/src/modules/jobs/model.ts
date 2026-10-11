@@ -1,3 +1,4 @@
+import { taskSchema } from "@server/tasks/model";
 import { t } from "elysia";
 
 export const jobsQuerySchema = t.Object({
@@ -13,13 +14,7 @@ export const jobsQuerySchema = t.Object({
       t.Literal("cancelled"),
     ]),
   ),
-  kind: t.Optional(
-    t.Union([
-      t.Literal("plex-scan"),
-      t.Literal("catalog-data"),
-      t.Literal("sync"),
-    ]),
-  ),
+  kind: t.Optional(t.Index(taskSchema, t.Literal("kind"))),
   limit: t.Optional(t.Numeric({ minimum: 1, maximum: 100, multipleOf: 1 })),
   offset: t.Optional(t.Numeric({ minimum: 0, multipleOf: 1 })),
 });

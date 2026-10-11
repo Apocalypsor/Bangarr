@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { openDatabase } from "@server/db/client";
 import { jobs } from "@server/db/schema";
 import { JobsService } from "@server/modules/jobs/service";
-import { testContext } from "@server/utils/testing";
+import { testContext, testSyncPayload } from "@server/utils/testing";
 
 const disposables: (() => void)[] = [];
 
@@ -42,9 +42,9 @@ test("active dedupe persists across connections and only one worker can claim", 
   };
 
   const input = {
-    kind: "sync",
+    kind: "sync" as const,
     dedupeKey: "server:user:1",
-    payload: { ratingKey: "1" },
+    payload: testSyncPayload(),
   };
 
   const original = JobsService.enqueue(queue, input);
@@ -67,9 +67,9 @@ test("crashed worker lease recovers, heartbeat protects a live job, stale owner 
   const { queue, advance } = fixture();
 
   const { job } = JobsService.enqueue(queue, {
-    kind: "sync",
+    kind: "sync" as const,
     dedupeKey: "1",
-    payload: {},
+    payload: testSyncPayload(),
   });
 
   JobsService.claim(queue, "a", 1000);
@@ -87,9 +87,9 @@ test("retry backoff respects cap and retains auditable failed jobs", () => {
   const { queue, advance } = fixture();
 
   const { job } = JobsService.enqueue(queue, {
-    kind: "sync",
+    kind: "sync" as const,
     dedupeKey: "1",
-    payload: {},
+    payload: testSyncPayload(),
     maxAttempts: 2,
   });
 
@@ -111,9 +111,9 @@ test("expired final attempt becomes failed and running writes cannot be cancelle
   const { queue, advance } = fixture();
 
   const { job } = JobsService.enqueue(queue, {
-    kind: "sync",
+    kind: "sync" as const,
     dedupeKey: "1",
-    payload: {},
+    payload: testSyncPayload(),
     maxAttempts: 1,
   });
 
@@ -128,9 +128,9 @@ test("only a live lease can checkpoint resolved targets or renew itself", () => 
   const { queue, advance } = fixture();
 
   const { job } = JobsService.enqueue(queue, {
-    kind: "sync",
+    kind: "sync" as const,
     dedupeKey: "target",
-    payload: {},
+    payload: testSyncPayload(),
   });
 
   JobsService.claim(queue, "a", 1000);
@@ -156,7 +156,7 @@ test("task filters retain scan failures after many sync jobs and expose no paylo
   const scan = JobsService.enqueue(queue, {
     kind: "plex-scan",
     dedupeKey: "scan",
-    payload: { privateDetail: "not-for-status" },
+    payload: { full: false, ...{ privateDetail: "not-for-status" } },
   });
 
   JobsService.claim(queue, "worker");
@@ -165,9 +165,9 @@ test("task filters retain scan failures after many sync jobs and expose no paylo
 
   for (let index = 0; index < 110; index++)
     JobsService.enqueue(queue, {
-      kind: "sync",
+      kind: "sync" as const,
       dedupeKey: `sync:${index}`,
-      payload: {},
+      payload: testSyncPayload(),
     });
 
   const failed = JobsService.page(queue, { state: "failed", limit: 1 });
@@ -181,10 +181,12 @@ test("task filters retain scan failures after many sync jobs and expose no paylo
   expect(JSON.stringify(failed)).not.toContain("not-for-status");
   expect(failed.counts.pending).toBe(110);
   expect(
-    JobsService.page(queue, { kind: "sync", limit: 10, offset: 100 }).items,
+    JobsService.page(queue, { kind: "sync" as const, limit: 10, offset: 100 })
+      .items,
   ).toHaveLength(10);
   expect(
-    JobsService.page(queue, { kind: "sync", limit: 10, offset: 110 }).items,
+    JobsService.page(queue, { kind: "sync" as const, limit: 10, offset: 110 })
+      .items,
   ).toHaveLength(0);
   advance(1);
 
@@ -197,9 +199,9 @@ test("task filters retain scan failures after many sync jobs and expose no paylo
 test("task progress persists and expired workers cannot overwrite it", () => {
   const { queue, directory, advance } = fixture();
   const task = JobsService.enqueue(queue, {
-    kind: "sync",
+    kind: "sync" as const,
     dedupeKey: "progress",
-    payload: { token: "not-public" },
+    payload: testSyncPayload({ token: "not-public" }),
   });
   JobsService.claim(queue, "first", 1000);
   JobsService.reportProgress(queue, task.job.id, "first", "正在匹配作品与章节");
@@ -231,7 +233,7 @@ test("scan diagnostics expose only safe fields and remain available after failur
   const { job } = JobsService.enqueue(queue, {
     kind: "plex-scan",
     dedupeKey: "scan",
-    payload: { token: "payload-secret" },
+    payload: { full: false, ...{ token: "payload-secret" } },
   });
   JobsService.claim(queue, "worker");
   JobsService.reportProgress(queue, job.id, "worker", "扫描未完成", {
@@ -276,9 +278,9 @@ test("active task pages exclude finished history before pagination and separate 
   const { queue, advance } = fixture();
   const enqueue = (key: string) =>
     JobsService.enqueue(queue, {
-      kind: "sync",
+      kind: "sync" as const,
       dedupeKey: key,
-      payload: {},
+      payload: testSyncPayload(),
     }).job;
 
   for (let index = 0; index < 35; index++) {
@@ -340,7 +342,7 @@ test("failed task counts follow retries and later scans without deleting history
   const original = JobsService.enqueue(queue, {
     kind: "plex-scan",
     dedupeKey: "scan:one",
-    payload: {},
+    payload: testSyncPayload(),
   }).job;
   JobsService.claim(queue, "worker");
   JobsService.fail(queue, original.id, "worker", "failed", false);
@@ -366,7 +368,7 @@ test("failed task counts follow retries and later scans without deleting history
   const nextScan = JobsService.enqueue(queue, {
     kind: "plex-scan",
     dedupeKey: "scan:one",
-    payload: {},
+    payload: testSyncPayload(),
   }).job;
   JobsService.claim(queue, "worker");
   JobsService.fail(queue, nextScan.id, "worker", "failed again", false);
@@ -399,7 +401,7 @@ test("latest-task filtering precedes pagination and uses insertion order when ti
         dedupeKey: key,
         kind: key.endsWith("scan") ? "plex-scan" : "sync",
         state,
-        payload: {},
+        payload: testSyncPayload(),
         createdAt: 10000,
         updatedAt: 10000,
         availableAt: 10000,

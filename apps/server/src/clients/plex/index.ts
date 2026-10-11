@@ -8,7 +8,6 @@ import type {
 } from "@server/clients/plex/types";
 import {
   containerRows,
-  isObject,
   parsePlexContainer,
   parsePlexItem,
   plexNumber,
@@ -17,6 +16,7 @@ import {
 import { AppError, RemoteError } from "@server/utils/errors";
 import type { HttpTransport } from "@server/utils/http";
 import { HttpClient } from "@server/utils/http";
+import { isObject } from "@server/utils/objects";
 import { validateHttpUrl } from "@server/utils/url";
 
 export class PlexClient {

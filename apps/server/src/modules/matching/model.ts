@@ -12,3 +12,10 @@ export const resolveCandidateSchema = t.Object({
   subjectId: t.Union([t.Integer({ minimum: 1 }), t.Null()]),
   episodeOffset: t.Integer({ minimum: -9999, maximum: 9999 }),
 });
+
+export const matchResultSchema = t.Object({
+  subjectId: t.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+  episodeId: t.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+  trace: t.Array(t.Record(t.String(), t.Unknown())),
+  mapped: t.Boolean(),
+});

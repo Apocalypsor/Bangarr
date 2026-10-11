@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createApp } from "@server/app";
 import type { Settings } from "@server/modules/settings/model";
-import { testContext } from "@server/utils/testing";
+import { testContext, testSyncPayload } from "@server/utils/testing";
 
 const disposables: (() => void)[] = [];
 
@@ -236,7 +236,7 @@ describe("management authentication", () => {
       (await app.handle(request("/auth/login", "POST", credentials))).status,
     ).toBe(429);
   });
-  test("settings mask credentials, encrypt storage, preserve empty secret, validate schedule", async () => {
+  test("general settings exclude Plex configuration and validate timezone", async () => {
     const { app, database } = fixture();
     const cookie = await login(app);
 
@@ -244,36 +244,16 @@ describe("management authentication", () => {
       await app.handle(request("/settings", "GET", undefined, cookie))
     ).json()) as Settings;
 
-    config.plex = {
-      enabled: true,
-      url: "http://plex:32400",
-      token: "sensitive-test-token",
-      userName: "alice",
-      libraryIds: ["1"],
-      cron: "*/15 * * * *",
-    };
-
-    let response = await app.handle(
+    config.scheduler.timezone = "Asia/Tokyo";
+    const response = await app.handle(
       request("/settings", "PUT", config, cookie),
     );
-
     expect(response.status).toBe(200);
-    expect(await response.text()).not.toContain("sensitive-test-token");
+    expect(await response.json()).not.toHaveProperty("plex");
     expect(
       JSON.stringify(database.sqlite.query("SELECT * FROM settings").all()),
-    ).not.toContain("sensitive-test-token");
-    config.plex.token = "";
-    response = await app.handle(request("/settings", "PUT", config, cookie));
-    expect(
-      (
-        (await response.json()) as {
-          plex: {
-            tokenConfigured: boolean;
-          };
-        }
-      ).plex.tokenConfigured,
-    ).toBe(true);
-    config.plex.cron = "broken";
+    ).toContain("Asia/Tokyo");
+    config.scheduler.timezone = "invalid-zone";
     expect(
       (await app.handle(request("/settings", "PUT", config, cookie))).status,
     ).toBe(400);
@@ -317,7 +297,7 @@ test("Plex multipart webhook persists per-account tasks and validates the secret
     { ...context, transport },
     {
       token: "test-token",
-      plexUsers: ["alice"],
+      plexUsers: ["default"],
       enabled: true,
       private: false,
     },
@@ -381,7 +361,7 @@ test("core management writes require a session and reject cross-origin requests"
 
   const account = {
     token: "test-token",
-    plexUsers: ["alice"],
+    plexUsers: ["default"],
     enabled: true,
     private: false,
   };
@@ -558,10 +538,15 @@ test("task page validates filters and cancellation affects only pending tasks", 
   const first = JobsService.enqueue(context, {
     kind: "sync",
     dedupeKey: "first",
-    payload: {
-      item: { title: "测试作品", season: 1, episode: 2 },
+    payload: testSyncPayload({
+      item: {
+        ...testSyncPayload().item,
+        title: "测试作品",
+        season: 1,
+        episode: 2,
+      },
       secret: "private-payload",
-    },
+    }),
   });
   const second = JobsService.enqueue(context, {
     kind: "plex-scan",

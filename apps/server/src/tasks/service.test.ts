@@ -9,7 +9,7 @@ import { defaultSettings } from "@server/modules/settings/model";
 import { SettingsService } from "@server/modules/settings/service";
 import { TaskService } from "@server/tasks/service";
 import type { HttpTransport } from "@server/utils/http";
-import { testContext } from "@server/utils/testing";
+import { seedPlexAccount, testContext } from "@server/utils/testing";
 
 const disposables: (() => void)[] = [];
 
@@ -28,14 +28,7 @@ const fixture = async (ambiguous = false) => {
   };
   const config = structuredClone(defaultSettings);
 
-  config.plex = {
-    enabled: true,
-    url: "http://plex",
-    token: "plex-secret",
-    userName: "alice",
-    libraryIds: ["1"],
-    cron: "*/15 * * * *",
-  };
+  seedPlexAccount(context);
   SettingsService.save(settings, config);
 
   const writes: {
@@ -136,14 +129,14 @@ const fixture = async (ambiguous = false) => {
 
   await AccountService.save(accounts, {
     token: "first",
-    plexUsers: ["alice"],
+    plexUsers: ["default"],
     enabled: true,
     private: false,
   });
 
   const second = await AccountService.save(accounts, {
     token: "second",
-    plexUsers: ["alice"],
+    plexUsers: ["default"],
     enabled: true,
     private: false,
   });
@@ -176,7 +169,7 @@ const scanFixture = async (
 ) => {
   const base = await fixture();
   const config = SettingsService.read(base.runner);
-  config.plex.libraryIds = libraryIds;
+  seedPlexAccount(base, { libraryIds });
   SettingsService.save(base.runner, config);
   const runner = {
     ...base.runner,

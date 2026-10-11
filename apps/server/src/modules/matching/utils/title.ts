@@ -1,3 +1,9 @@
+export const titleNames = (title: string, originalTitle: string) => [
+  ...new Set(
+    [title, originalTitle].map((value) => value.trim()).filter(Boolean),
+  ),
+];
+
 export const normalizeTitle = (value: string) =>
   value
     .normalize("NFKC")

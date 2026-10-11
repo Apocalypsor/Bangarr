@@ -1,5 +1,8 @@
-import type { PlexItem, PlexScanIssue } from "@server/clients/plex/types";
-import type { MatchResult } from "@server/modules/matching/types";
+import type { PlexScanIssue } from "@server/clients/plex/types";
+import type { syncPayloadSchema, taskSchema } from "@server/tasks/model";
+
+export type SyncPayload = typeof syncPayloadSchema.static;
+export type Task = typeof taskSchema.static;
 
 export interface ScanReport {
   scanned: number;
@@ -9,17 +12,4 @@ export interface ScanReport {
   failedLibraries: number;
   issues: PlexScanIssue[];
   issuesOmitted: number;
-}
-
-export interface SyncPayload {
-  item: PlexItem;
-  scope: string;
-  userName: string;
-  accountId: string;
-  plexAccountId?: string;
-  plexAccountName?: string;
-  action: "watching" | "watched";
-  source: string;
-  full?: boolean;
-  resolved?: MatchResult;
 }

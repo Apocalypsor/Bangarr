@@ -11,3 +11,5 @@ export const recordQuerySchema = t.Object({
   limit: t.Optional(t.Numeric({ minimum: 1, maximum: 200 })),
   offset: t.Optional(t.Numeric({ minimum: 0 })),
 });
+
+export type HistoryFilter = typeof recordQuerySchema.static;

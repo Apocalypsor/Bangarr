@@ -3,7 +3,7 @@ import { saveSyncRecord } from "@server/db/records";
 import { accounts, records } from "@server/db/schema";
 import { JobsService } from "@server/modules/jobs/service";
 import { RecordsService } from "@server/modules/records/service";
-import { testContext } from "@server/utils/testing";
+import { testContext, testSyncPayload } from "@server/utils/testing";
 
 test("history filters before counting and paginating, with literal substring search", () => {
   const ctx = testContext();
@@ -68,7 +68,7 @@ test("retry updates the same record and its detail instead of retaining the fail
     const job = JobsService.enqueue(queue, {
       kind: "sync",
       dedupeKey: "1",
-      payload: { original: true },
+      payload: testSyncPayload({ original: true }),
     }).job;
 
     JobsService.claim(queue, "test");
@@ -95,7 +95,7 @@ test("retry updates the same record and its detail instead of retaining the fail
     const retry = RecordsService.retry(history, "failure");
 
     expect(retry.job.id).not.toBe(job.id);
-    expect(retry.job.payload).toEqual({ original: true });
+    expect(retry.job.payload).toEqual(job.payload);
     expect(RecordsService.get(history, "failure").message).toBe(
       "original error",
     );
@@ -170,11 +170,11 @@ test("record details include account and task context without exposing credentia
     const job = JobsService.enqueue(context, {
       kind: "sync",
       dedupeKey: "detail",
-      payload: {
+      payload: testSyncPayload({
         action: "watched",
         plexAccountName: "Home",
         privateField: "never-return-this",
-      },
+      }),
     }).job;
     context.database.orm
       .insert(records)

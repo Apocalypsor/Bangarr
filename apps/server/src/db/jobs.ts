@@ -46,45 +46,12 @@ export const assignJobLease = (
 ) =>
   database.orm
     .update(jobs)
-    .set(changes)
+    .set({ ...changes, attempt: sql`${jobs.attempt} + 1` })
     .where(eq(jobs.id, id))
     .returning()
     .get();
 
-export const incrementJobAttempt = (
-  database: AppDatabase,
-  id: string,
-  changes: Partial<typeof jobs.$inferInsert>,
-) =>
-  database.orm
-    .update(jobs)
-    .set(changes)
-    .where(eq(jobs.id, id))
-    .returning()
-    .get();
-
-export const renewJobLease = (
-  database: AppDatabase,
-  id: string,
-  owner: string,
-  now: number,
-  changes: Partial<typeof jobs.$inferInsert>,
-) =>
-  database.orm
-    .update(jobs)
-    .set(changes)
-    .where(
-      and(
-        eq(jobs.id, id),
-        eq(jobs.leaseOwner, owner),
-        eq(jobs.state, "running"),
-        gt(jobs.leaseUntil, now),
-      ),
-    )
-    .returning({ id: jobs.id })
-    .get();
-
-export const checkpointJob = (
+export const updateLeasedJob = (
   database: AppDatabase,
   id: string,
   owner: string,
@@ -164,8 +131,7 @@ export const listTaskPage = (database: AppDatabase, filter: JobsQuery) => {
   const latest = sql`${jobs}.rowid in (
     select max(rowid) from ${jobs} group by ${jobs.dedupeKey}
   )`;
-  const where = and(
-    latest,
+  const filters = and(
     filter.state === "active"
       ? inArray(jobs.state, ["pending", "running"])
       : filter.state === "waiting"
@@ -177,6 +143,7 @@ export const listTaskPage = (database: AppDatabase, filter: JobsQuery) => {
             : undefined,
     filter.kind ? eq(jobs.kind, filter.kind) : undefined,
   );
+  const where = and(latest, filters);
   const limit = filter.limit ?? 30;
   const offset = filter.offset ?? 0;
 
@@ -186,79 +153,64 @@ export const listTaskPage = (database: AppDatabase, filter: JobsQuery) => {
       desc(jobs.createdAt),
       desc(jobs.id),
     ];
-    const ids = database.orm
-      .select({ id: jobs.id })
+    const counts = database.orm
+      .select({
+        state: jobs.state,
+        count: sql<number>`count(*)`,
+        retrying: sql<number>`sum(case when ${jobs.attempt} > 0 then 1 else 0 end)`,
+        matching: sql<number>`sum(case when ${filters ?? sql`1`} then 1 else 0 end)`,
+      })
       .from(jobs)
-      .where(where)
-      .orderBy(...order)
-      .limit(limit)
-      .offset(offset)
-      .all()
-      .map((row) => row.id);
+      .where(latest)
+      .groupBy(jobs.state)
+      .all();
 
     return {
-      items: ids.length
-        ? database.orm
-            .select({
-              id: jobs.id,
-              kind: jobs.kind,
-              state: jobs.state,
-              attempt: jobs.attempt,
-              maxAttempts: jobs.maxAttempts,
-              lastError: jobs.lastError,
-              result: jobs.result,
-              availableAt: jobs.availableAt,
-              createdAt: jobs.createdAt,
-              updatedAt: jobs.updatedAt,
-              title: sql<
-                string | null
-              >`json_extract(${jobs.payload}, '$.item.title')`,
-              season: sql<
-                number | null
-              >`json_extract(${jobs.payload}, '$.item.season')`,
-              episode: sql<
-                number | null
-              >`json_extract(${jobs.payload}, '$.item.episode')`,
-              userName: sql<
-                string | null
-              >`json_extract(${jobs.payload}, '$.userName')`,
-              accountName: accounts.username,
-              plexAccountName: sql<
-                string | null
-              >`json_extract(${jobs.payload}, '$.plexAccountName')`,
-              needsConfirmation:
-                sql<boolean>`exists(select 1 from ${candidates} where ${candidates.jobId} = ${jobs.id} and ${candidates.state} = 'pending')`.mapWith(
-                  Boolean,
-                ),
-            })
-            .from(jobs)
-            .leftJoin(
-              accounts,
-              eq(
-                accounts.id,
-                sql`json_extract(${jobs.payload}, '$.accountId')`,
-              ),
-            )
-            .where(inArray(jobs.id, ids))
-            .orderBy(...order)
-            .all()
-        : [],
-      total:
-        database.orm
-          .select({ count: sql<number>`count(*)` })
-          .from(jobs)
-          .where(where)
-          .get()?.count ?? 0,
-      counts: database.orm
+      items: database.orm
         .select({
+          id: jobs.id,
+          kind: jobs.kind,
           state: jobs.state,
-          count: sql<number>`count(*)`,
-          retrying: sql<number>`sum(case when ${jobs.attempt} > 0 then 1 else 0 end)`,
+          attempt: jobs.attempt,
+          maxAttempts: jobs.maxAttempts,
+          lastError: jobs.lastError,
+          result: jobs.result,
+          availableAt: jobs.availableAt,
+          createdAt: jobs.createdAt,
+          updatedAt: jobs.updatedAt,
+          title: sql<
+            string | null
+          >`json_extract(${jobs.payload}, '$.item.title')`,
+          season: sql<
+            number | null
+          >`json_extract(${jobs.payload}, '$.item.season')`,
+          episode: sql<
+            number | null
+          >`json_extract(${jobs.payload}, '$.item.episode')`,
+          userName: sql<
+            string | null
+          >`json_extract(${jobs.payload}, '$.userName')`,
+          accountName: accounts.username,
+          plexAccountName: sql<
+            string | null
+          >`json_extract(${jobs.payload}, '$.plexAccountName')`,
+          needsConfirmation:
+            sql<boolean>`exists(select 1 from ${candidates} where ${candidates.jobId} = ${jobs.id} and ${candidates.state} = 'pending')`.mapWith(
+              Boolean,
+            ),
         })
         .from(jobs)
-        .where(latest)
-        .groupBy(jobs.state)
+        .leftJoin(
+          accounts,
+          eq(accounts.id, sql`json_extract(${jobs.payload}, '$.accountId')`),
+        )
+        .where(where)
+        .orderBy(...order)
+        .limit(limit)
+        .offset(offset)
         .all(),
+      total: counts.reduce((sum, row) => sum + row.matching, 0),
+      counts,
       limit,
       offset,
     };

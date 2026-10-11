@@ -1,11 +1,10 @@
 import type { jobs } from "@server/db/schema";
+import type { Task } from "@server/tasks/types";
 
 export type Job = typeof jobs.$inferSelect;
 
-export interface EnqueueInput {
-  kind: string;
+export type EnqueueInput = Task & {
   dedupeKey: string;
-  payload: Record<string, unknown>;
   maxAttempts?: number;
   availableAt?: number;
-}
+};

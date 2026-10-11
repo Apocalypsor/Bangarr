@@ -14,7 +14,7 @@ import splitCourTitles from "@server/modules/matching/fixtures/split-cour-title-
 import { MatchingService } from "@server/modules/matching/service";
 import { defaultSettings } from "@server/modules/settings/model";
 import { SettingsService } from "@server/modules/settings/service";
-import { testContext } from "@server/utils/testing";
+import { testContext, testSyncPayload } from "@server/utils/testing";
 
 interface Segment {
   id: number;
@@ -688,8 +688,9 @@ const seedCandidate = (
       id: row.id,
       kind: "sync",
       dedupeKey: row.id,
-      payload: {
+      payload: testSyncPayload({
         item: {
+          ...testSyncPayload().item,
           title: row.title,
           season: row.season,
           episode: row.episode,
@@ -699,7 +700,7 @@ const seedCandidate = (
         userName: "plex-user",
         plexAccountName: "Home",
         secret: "private-payload",
-      },
+      }),
       state: "failed",
       availableAt: 0,
       createdAt: 0,

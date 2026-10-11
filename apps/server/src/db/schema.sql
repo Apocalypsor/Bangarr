@@ -27,6 +27,8 @@ CREATE TABLE `candidates` (
 	CONSTRAINT "candidates_state_check" CHECK("candidates"."state" IN ('pending', 'confirmed', 'rejected'))
 );
 
+CREATE INDEX `candidates_job_state` ON `candidates` (`job_id`,`state`);
+CREATE INDEX `candidates_state` ON `candidates` (`state`);
 CREATE TABLE `jobs` (
 	`id` text PRIMARY KEY NOT NULL,
 	`kind` text NOT NULL,
@@ -45,6 +47,7 @@ CREATE TABLE `jobs` (
 	CONSTRAINT "jobs_state_check" CHECK("jobs"."state" IN ('pending', 'running', 'succeeded', 'failed', 'cancelled'))
 );
 
+CREATE INDEX `jobs_dedupe_key` ON `jobs` (`dedupe_key`);
 CREATE INDEX `jobs_ready` ON `jobs` (`state`,`available_at`);
 CREATE UNIQUE INDEX `jobs_active_key` ON `jobs` (`dedupe_key`) WHERE "jobs"."state" IN ('pending', 'running');
 CREATE TABLE `mappings` (

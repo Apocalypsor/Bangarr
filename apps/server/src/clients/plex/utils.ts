@@ -1,5 +1,6 @@
 import type { PlexContainer, PlexItem } from "@server/clients/plex/types";
 import { AppError } from "@server/utils/errors";
+import { isObject } from "@server/utils/objects";
 import { XMLParser } from "fast-xml-parser";
 
 export const parsePlexContainer = (text: string): PlexContainer => {
@@ -99,6 +100,3 @@ export const containerRows = (
 
   return value;
 };
-
-export const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);

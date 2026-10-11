@@ -2,55 +2,63 @@ import { transaction } from "@server/db/client";
 import {
   assignJobLease,
   cancelPendingJob,
-  checkpointJob,
   completeJob,
   findActiveJob,
   findReadyJob,
   getJob,
-  incrementJobAttempt,
   insertJob,
   listJobs,
   listTaskPage,
   recoverExpiredJobs,
-  renewJobLease,
   updateJobFailure,
+  updateLeasedJob,
 } from "@server/db/jobs";
 import type { JobsQuery } from "@server/modules/jobs/model";
 import type { EnqueueInput, Job } from "@server/modules/jobs/types";
 import { scanReport, taskProgress } from "@server/modules/jobs/utils";
+import { defaultSettings } from "@server/modules/settings/model";
+import { parseTask } from "@server/tasks/utils";
 import type { AppContext } from "@server/types";
 import { AppError } from "@server/utils/errors";
+
+const leaseDurationMs = 60_000;
 
 export abstract class JobsService {
   static enqueue(
     context: Pick<AppContext, "database" | "now">,
     input: EnqueueInput,
   ) {
+    parseTask(input);
     return transaction(
       context.database,
-      () => {
-        const existing = findActiveJob(context.database, input.dedupeKey);
-
-        if (existing) return { job: existing, created: false };
-
-        const now = (context.now ?? Date.now)();
-
-        const job = insertJob(context.database, {
-          id: crypto.randomUUID(),
-          kind: input.kind,
-          dedupeKey: input.dedupeKey,
-          payload: input.payload,
-          maxAttempts: input.maxAttempts ?? 5,
-          state: "pending",
-          availableAt: input.availableAt ?? now,
-          createdAt: now,
-          updatedAt: now,
-        });
-
-        return { job, created: true };
-      },
+      () => JobsService.insert(context, input),
       "immediate",
     );
+  }
+
+  private static insert(
+    context: Pick<AppContext, "database" | "now">,
+    input: EnqueueInput,
+  ) {
+    const existing = findActiveJob(context.database, input.dedupeKey);
+
+    if (existing) return { job: existing, created: false };
+
+    const now = (context.now ?? Date.now)();
+
+    const job = insertJob(context.database, {
+      id: crypto.randomUUID(),
+      kind: input.kind,
+      dedupeKey: input.dedupeKey,
+      payload: input.payload,
+      maxAttempts: input.maxAttempts ?? defaultSettings.scheduler.maxAttempts,
+      state: "pending",
+      availableAt: input.availableAt ?? now,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return { job, created: true };
   }
 
   static enqueueBatch(
@@ -58,12 +66,13 @@ export abstract class JobsService {
     inputs: EnqueueInput[],
   ) {
     if (!inputs.length) return 0;
+    for (const input of inputs) parseTask(input);
     return transaction(
       context.database,
       () =>
         inputs.reduce(
           (count, input) =>
-            count + Number(JobsService.enqueue(context, input).created),
+            count + Number(JobsService.insert(context, input).created),
           0,
         ),
       "immediate",
@@ -73,7 +82,7 @@ export abstract class JobsService {
   static claim(
     context: Pick<AppContext, "database" | "now">,
     owner: string,
-    leaseMs = 60000,
+    leaseMs = leaseDurationMs,
   ): Job | null {
     return transaction(
       context.database,
@@ -87,7 +96,7 @@ export abstract class JobsService {
 
         if (!row) return null;
 
-        const job = assignJobLease(context.database, row.id, {
+        return assignJobLease(context.database, row.id, {
           state: "running",
           result: null,
           lastError: null,
@@ -95,14 +104,6 @@ export abstract class JobsService {
           leaseUntil: now + leaseMs,
           updatedAt: now,
         });
-
-        if (!job) return null;
-
-        return (
-          incrementJobAttempt(context.database, row.id, {
-            attempt: job.attempt + 1,
-          }) ?? null
-        );
       },
       "immediate",
     );
@@ -112,12 +113,13 @@ export abstract class JobsService {
     context: Pick<AppContext, "database" | "now">,
     id: string,
     owner: string,
-    leaseMs = 60000,
+    leaseMs = leaseDurationMs,
   ) {
+    const now = (context.now ?? Date.now)();
     return (
-      renewJobLease(context.database, id, owner, (context.now ?? Date.now)(), {
-        leaseUntil: (context.now ?? Date.now)() + leaseMs,
-        updatedAt: (context.now ?? Date.now)(),
+      updateLeasedJob(context.database, id, owner, now, {
+        leaseUntil: now + leaseMs,
+        updatedAt: now,
       }) !== undefined
     );
   }
@@ -128,7 +130,7 @@ export abstract class JobsService {
     owner: string,
     payload: Record<string, unknown>,
   ) {
-    const row = checkpointJob(
+    const row = updateLeasedJob(
       context.database,
       id,
       owner,
@@ -230,11 +232,15 @@ export abstract class JobsService {
     if (!["failed", "cancelled"].includes(job.state))
       throw new AppError(409, "JOB_NOT_RETRYABLE", "任务仍在执行或已成功");
 
-    // 重新入队，保留旧任务审计历史，复用活动任务去重。
+    return JobsService.requeue(context, job);
+  }
+
+  // All retry entry points preserve only the task payload and retry limit,
+  // never an old lease, attempt count or delayed availableAt.
+  static requeue(context: Pick<AppContext, "database" | "now">, job: Job) {
     return JobsService.enqueue(context, {
-      kind: job.kind,
+      ...parseTask(job),
       dedupeKey: job.dedupeKey,
-      payload: job.payload,
       maxAttempts: job.maxAttempts,
     });
   }
@@ -282,7 +288,7 @@ export abstract class JobsService {
   ) {
     const now = (context.now ?? Date.now)();
     if (
-      !checkpointJob(context.database, id, owner, now, {
+      !updateLeasedJob(context.database, id, owner, now, {
         result: { ...details, progress },
         updatedAt: now,
       })
