@@ -507,11 +507,7 @@ export abstract class MatchingService {
     const dated = item.releaseDate
       ? chain.flatMap((entry) =>
           entry.episodes
-            .filter(
-              (ep) =>
-                ep.airdate === item.releaseDate &&
-                (item.episode !== 0 || ep.sort === 0),
-            )
+            .filter((ep) => ep.airdate === item.releaseDate && ep.sort > 0)
             .map((ep) => ({ subjectId: entry.subject.id, episodeId: ep.id })),
         )
       : [];

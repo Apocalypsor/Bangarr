@@ -86,10 +86,13 @@ export const findCumulativeEpisode = (
       (ep) => ep.type === 0 && Number.isInteger(ep.sort),
     );
 
-    const first = Math.min(...normal.map((ep) => ep.sort));
+    const first = Math.max(1, Math.min(...normal.map((ep) => ep.sort)));
     const last = Math.max(...normal.map((ep) => ep.sort));
     // Missing chapters must not compress a segment and shift every later episode.
-    const declared = segment.subject.eps ?? 0;
+    const prologues = segment.episodes.filter(
+      (ep) => ep.type === 0 && ep.sort === 0,
+    ).length;
+    const declared = (segment.subject.eps ?? 0) - prologues;
 
     const span = Math.max(
       last - first + 1,
@@ -99,7 +102,7 @@ export const findCumulativeEpisode = (
     if (!normal.length) return undefined;
 
     if (target <= preceding + span) {
-      const episode = findLocalEpisode(normal, target - preceding);
+      const episode = findLocalEpisode(normal, target - preceding, false);
 
       return episode
         ? { subjectId: segment.subject.id, episodeId: episode.id }
@@ -122,7 +125,7 @@ export const findDatedEpisode = (
 
   const candidates = segments
     .flatMap((segment) => {
-      const episode = findLocalEpisode(segment.episodes, target);
+      const episode = findLocalEpisode(segment.episodes, target, false);
       const days = episode?.airdate
         ? dateDistance(episode.airdate, releaseDate)
         : null;
@@ -144,15 +147,23 @@ const isContinuationTitle = (title: string) =>
     title.normalize("NFKC"),
   );
 
-/** Reference _match_target_ep_rows: ep = sort - first normal sort + 1, then sort/ep. */
+/** Explicit mappings retain Bangumi-local numbering; Plex numbering leaves E00 for confirmation. */
 export const findLocalEpisode = (
   episodes: BangumiEpisode[],
   target: number,
+  includeZero = true,
 ) => {
+  if (!includeZero && target <= 0) return undefined;
+
   const normal = episodes.filter(
     (ep) => ep.type === 0 && Number.isFinite(ep.sort),
   );
-  const first = normal.length ? Math.min(...normal.map((ep) => ep.sort)) : null;
+  const first = normal.length
+    ? Math.max(
+        includeZero ? -Infinity : 1,
+        Math.min(...normal.map((ep) => ep.sort)),
+      )
+    : null;
 
   if (first !== null) {
     const relative = normal.filter((ep) => ep.sort - first + 1 === target);
@@ -197,7 +208,7 @@ export const findMergedSeasonEpisode = (
 
   const group = groups[season - 1];
 
-  return group ? findLocalEpisode(group, target) : undefined;
+  return group ? findLocalEpisode(group, target, false) : undefined;
 };
 
 export const dateDistance = (left: string, right: string) => {

@@ -392,13 +392,13 @@ const fixture = (
   return { resolve, calls, context, api };
 };
 
-test("episode zero remains pending and positive local numbering follows Bangumi ep", async () => {
+test("episode zero remains pending and cannot shift positive Plex numbering", async () => {
   const { resolve } = fixture([
     { id: 1, name: "番剧", start: 0, count: 3 },
     { id: 2, name: "番剧 第二季", start: 0, count: 3 },
   ]);
   await expect(resolve(2, 0)).rejects.toBeInstanceOf(NeedsConfirmation);
-  expect(await resolve(2, 1)).toEqual({ subjectId: 2, episodeId: 2001 });
+  expect(await resolve(2, 1)).toEqual({ subjectId: 2, episodeId: 2002 });
   await expect(resolve(3, 0)).rejects.toBeInstanceOf(NeedsConfirmation);
 });
 
@@ -828,7 +828,7 @@ test.each([373247, 444557])(
       viewCount: 1,
       lastViewedAt: null,
     };
-    MatchingService.save(context, {
+    const mapping = MatchingService.save(context, {
       title: item.title,
       season: 2,
       subjectId: entryId,
@@ -860,17 +860,38 @@ test.each([373247, 444557])(
         subjectId: expected.subject_id,
         episodeId: expected.id,
       });
+
+      for (const dayShift of [-1, 0, 1]) {
+        const releaseDate = new Date(
+          Date.parse(expected.airdate) + dayShift * 86400000,
+        )
+          .toISOString()
+          .slice(0, 10);
+        expect(
+          await MatchingService.resolveEpisode(
+            context,
+            { ...item, episode: expected.sort, releaseDate },
+            api,
+            expected.subject_id,
+            true,
+            [],
+          ),
+        ).toEqual({ subjectId: expected.subject_id, episodeId: expected.id });
+      }
+
+      // Missing dates must not count E00 toward the next cour's offset.
+      expect(
+        await MatchingService.match(
+          context,
+          { ...item, episode: expected.sort },
+          api,
+          defaultSettings,
+        ),
+      ).toMatchObject({
+        subjectId: expected.subject_id,
+        episodeId: expected.id,
+      });
     }
-    // Reference _resolve_by_season_chain counts all type=0 chapters, including sort 0.
-    // With no date, S2E17 is local ep 4 in the second subject (sort 16).
-    expect(
-      await MatchingService.match(
-        context,
-        { ...item, episode: 17 },
-        api,
-        defaultSettings,
-      ),
-    ).toMatchObject({ subjectId: 444557, episodeId: 1233197 });
     await expect(
       MatchingService.match(
         context,
@@ -922,6 +943,38 @@ test.each([373247, 444557])(
           mapped: true,
         });
       }
+    }
+
+    // Exercise the catalog path that marks a cour as an already matched season.
+    MatchingService.delete(context, mapping.id);
+    const catalog = createCatalog(
+      new CatalogStore(context.database.path).path(),
+    );
+    for (const subject of splitCourTitles.filter((row) =>
+      mushokuSeasonTwo.some((segment) => segment.subject.id === row.id),
+    ))
+      insertSubject(catalog, { ...subject, source: "data" });
+    catalog.close();
+
+    for (const expected of mushokuSeasonTwo
+      .flatMap((row) => row.episodes)
+      .filter((ep) => ep.sort > 0)) {
+      const result = await MatchingService.match(
+        context,
+        { ...item, episode: expected.sort, releaseDate: expected.airdate },
+        api,
+        defaultSettings,
+      );
+      expect(result).toMatchObject({
+        subjectId: expected.subject_id,
+        episodeId: expected.id,
+        mapped: false,
+      });
+      expect(
+        result.trace.some(
+          (step) => step.step === "local-catalog" && step.outcome === "hit",
+        ),
+      ).toBe(true);
     }
   },
 );

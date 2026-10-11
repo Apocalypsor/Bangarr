@@ -32,7 +32,18 @@ test("local numbering follows the reference sort minus first normal sort plus on
   );
 });
 
-test("same-season fallback counts actual normal chapters including a prologue", () => {
+test("Plex positive numbering excludes a prologue while explicit local numbering can still select it", () => {
+  const episodes = [episode(10, 0, 1), episode(11, 1, 2), episode(12, 2, 3)];
+  expect(findLocalEpisode(episodes, 1, false)?.id).toBe(11);
+  expect(findLocalEpisode(episodes, 2, false)?.id).toBe(12);
+  expect(findLocalEpisode(episodes, 3, false)).toBeUndefined();
+  expect(findLocalEpisode(episodes, 1)?.id).toBe(10);
+  const missingFirst = episodes.filter((row) => row.sort !== 1);
+  expect(findLocalEpisode(missingFirst, 1, false)).toBeUndefined();
+  expect(findLocalEpisode(missingFirst, 2, false)?.id).toBe(12);
+});
+
+test("same-season fallback excludes a prologue without compressing missing positive chapters", () => {
   const first = {
     subject: { id: 1, name: "番剧 第二季", name_cn: "", type: 2, eps: 13 },
     episodes: Array.from({ length: 13 }, (_, i) => episode(100 + i, i, i + 1)),
@@ -50,29 +61,50 @@ test("same-season fallback counts actual normal chapters including a prologue", 
     ),
   };
   expect(findCumulativeEpisode([first, second], 0)).toBeUndefined();
-  expect(findCumulativeEpisode([first, second], 13)).toEqual({
+  expect(findCumulativeEpisode([first, second], 12)).toEqual({
     subjectId: 1,
     episodeId: 112,
   });
-  expect(findCumulativeEpisode([first, second], 14)).toEqual({
+  expect(findCumulativeEpisode([first, second], 13)).toEqual({
     subjectId: 2,
     episodeId: 200,
   });
   expect(findCumulativeEpisode([first, second], 17)).toEqual({
     subjectId: 2,
-    episodeId: 203,
+    episodeId: 204,
   });
-  expect(findCumulativeEpisode([first, second], 25)).toEqual({
+  expect(findCumulativeEpisode([first, second], 24)).toEqual({
     subjectId: 2,
     episodeId: 211,
   });
+  expect(findCumulativeEpisode([first, second], 25)).toBeUndefined();
   first.episodes = first.episodes.filter((row) => row.sort !== 12);
-  expect(findCumulativeEpisode([first, second], 13)).toBeUndefined();
-  expect(findCumulativeEpisode([first, second], 14)).toEqual({
+  expect(findCumulativeEpisode([first, second], 12)).toBeUndefined();
+  expect(findCumulativeEpisode([first, second], 13)).toEqual({
     subjectId: 2,
     episodeId: 200,
   });
 });
+
+test.each([7, 13, 24])(
+  "a prologue does not shift a cour boundary after %s positive episodes",
+  (count) => {
+    const first = {
+      subject: { id: 1, name: "番剧", name_cn: "", type: 2, eps: count + 1 },
+      episodes: Array.from({ length: count + 1 }, (_, sort) =>
+        episode(100 + sort, sort, sort + 1),
+      ),
+    };
+    const second = {
+      subject: { id: 2, name: "番剧 第2部分", name_cn: "", type: 2, eps: 2 },
+      episodes: [episode(200, count + 1, 1), episode(201, count + 2, 2)],
+    };
+    expect(findCumulativeEpisode([first, second], count + 1)).toEqual({
+      subjectId: 2,
+      episodeId: 200,
+    });
+  },
+);
 
 test("chapter airdate resolution follows numbering, a 120-day bound and unique dates", () => {
   const segment = (id: number, airdate: string) => ({
@@ -110,8 +142,8 @@ test("a merged season starting at zero stays in that season", () => {
     episode(4, 1),
     episode(5, 2),
   ];
-  expect(findMergedSeasonEpisode(episodes, 2, 0)?.id).toBe(3);
-  expect(findMergedSeasonEpisode(episodes, 2, 1)?.id).toBe(3);
+  expect(findMergedSeasonEpisode(episodes, 2, 0)).toBeUndefined();
+  expect(findMergedSeasonEpisode(episodes, 2, 1)?.id).toBe(4);
   expect(findMergedSeasonEpisode(episodes, 3, 0)).toBeUndefined();
 });
 

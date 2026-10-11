@@ -323,17 +323,21 @@ export const findEpisode = (
   releaseDate: string,
 ) => {
   if (episodes.length >= 100 && releaseDate) {
-    const dated = episodes.filter((ep) => ep.airdate === releaseDate);
+    const dated = episodes.filter(
+      (ep) => ep.airdate === releaseDate && ep.sort > 0,
+    );
 
     if (dated.length === 1) return dated[0];
   }
 
   if (seasonMatched || target <= episodes.length)
-    return findLocalEpisode(episodes, target);
+    return findLocalEpisode(episodes, target, false);
 
   const exact = episodes.filter((ep) => ep.sort === target);
 
-  return exact.length === 1 ? exact[0] : findLocalEpisode(episodes, target);
+  return exact.length === 1
+    ? exact[0]
+    : findLocalEpisode(episodes, target, false);
 };
 
 export const conflictingEpisodeDate = (
