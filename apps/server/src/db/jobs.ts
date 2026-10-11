@@ -97,7 +97,7 @@ export const updateJobFailure = (
   changes: Partial<typeof jobs.$inferInsert>,
 ) => database.orm.update(jobs).set(changes).where(eq(jobs.id, id)).run();
 
-export const cancelPendingJob = (
+export const cancelJob = (
   database: AppDatabase,
   id: string,
   changes: Partial<typeof jobs.$inferInsert>,
@@ -105,7 +105,7 @@ export const cancelPendingJob = (
   database.orm
     .update(jobs)
     .set(changes)
-    .where(and(eq(jobs.id, id), eq(jobs.state, "pending")))
+    .where(and(eq(jobs.id, id), inArray(jobs.state, ["pending", "failed"])))
     .returning()
     .get();
 

@@ -531,7 +531,7 @@ test("changing the administrator rotates sessions and reopening the database nev
   }
 });
 
-test("task page validates filters and cancellation affects only pending tasks", async () => {
+test("task page validates filters and cancellation accepts pending or failed tasks but rejects running tasks", async () => {
   const { app, database } = fixture();
   const { JobsService } = await import("@server/modules/jobs/service");
   const context = { database };
@@ -606,4 +606,21 @@ test("task page validates filters and cancellation affects only pending tasks", 
       )
     ).status,
   ).toBe(409);
+
+  JobsService.fail(context, second.job.id, "worker", "扫描失败", false);
+  expect(
+    (
+      await app.handle(
+        request(`/jobs/${second.job.id}/cancel`, "POST", undefined, cookie),
+      )
+    ).status,
+  ).toBe(200);
+  expect(JobsService.get(context, second.job.id)?.state).toBe("cancelled");
+  const failed = await app.handle(
+    request("/jobs?state=failed", "GET", undefined, cookie),
+  );
+  expect(await failed.json()).toMatchObject({
+    total: 0,
+    counts: { failed: 0, cancelled: 2 },
+  });
 });

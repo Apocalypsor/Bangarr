@@ -1,5 +1,6 @@
 import type { AppDatabase } from "@server/db/client";
-import { candidates, jobs, records, watched } from "@server/db/schema";
+import { closeJobCandidates } from "@server/db/matching";
+import { candidates, records, watched } from "@server/db/schema";
 import type { HistoryFilter } from "@server/modules/records/model";
 import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
 
@@ -26,19 +27,7 @@ export const saveSyncRecord = (
     .run();
 
   if (value.status === "success" && value.jobId)
-    database.orm
-      .update(candidates)
-      .set({ state: "confirmed" })
-      .where(
-        and(
-          eq(candidates.state, "pending"),
-          sql`${candidates.jobId} in (
-        select ${jobs.id} from ${jobs}
-        where ${jobs.dedupeKey} = (select ${jobs.dedupeKey} from ${jobs} where ${jobs.id} = ${value.jobId})
-      )`,
-        ),
-      )
-      .run();
+    closeJobCandidates(database, value.jobId, "confirmed");
 };
 
 export const findPendingJobCandidate = (database: AppDatabase, jobId: string) =>

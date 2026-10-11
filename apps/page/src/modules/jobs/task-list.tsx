@@ -66,6 +66,7 @@ export const TaskList = () => {
     onSuccess: () => {
       toast.success("已取消");
       void client.invalidateQueries({ queryKey: ["jobs"] });
+      void client.invalidateQueries({ queryKey: ["candidates"] });
     },
     onError: (error) => toast.error(error.message),
   });
@@ -168,7 +169,8 @@ export const TaskList = () => {
                   <TableBody>
                     {jobs.data.items.map((job) => {
                       const pendingAction =
-                        cancel.isPending && cancel.variables === job.id;
+                        (cancel.isPending && cancel.variables === job.id) ||
+                        (retry.isPending && retry.variables === job.id);
                       const waitingRetry =
                         job.state === "pending" && job.attempt > 0;
 
@@ -258,28 +260,30 @@ export const TaskList = () => {
                             {new Date(job.updatedAt).toLocaleString()}
                           </TableCell>
                           <TableCell>
-                            {job.state === "pending" ? (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                disabled={pendingAction}
-                                onClick={() => cancel.mutate(job.id)}
-                              >
-                                取消
-                              </Button>
-                            ) : job.state === "failed" &&
-                              !job.needsConfirmation ? (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                disabled={
-                                  retry.isPending && retry.variables === job.id
-                                }
-                                onClick={() => retry.mutate(job.id)}
-                              >
-                                重试
-                              </Button>
-                            ) : null}
+                            <div className="flex gap-2">
+                              {job.state === "failed" &&
+                                !job.needsConfirmation && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={pendingAction}
+                                    onClick={() => retry.mutate(job.id)}
+                                  >
+                                    重试
+                                  </Button>
+                                )}
+                              {(job.state === "pending" ||
+                                job.state === "failed") && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  disabled={pendingAction}
+                                  onClick={() => cancel.mutate(job.id)}
+                                >
+                                  取消
+                                </Button>
+                              )}
+                            </div>
                           </TableCell>
                         </TableRow>
                       );

@@ -635,6 +635,39 @@ test("confirmation groups episodes and accounts by exact title and season and re
   );
 });
 
+test("cancelling one failed task leaves its matching group intact and prevents grouped confirmation from reviving it", () => {
+  const context = testContext();
+  disposables.push(context.dispose);
+  for (const id of ["cancelled", "remaining"])
+    seedCandidate(context, {
+      id,
+      title: "同一作品",
+      season: 1,
+      episode: 1,
+      accountId: id,
+    });
+
+  JobsService.cancel(context, "cancelled");
+  expect(MatchingService.candidates(context)).toMatchObject([
+    { taskCount: 1, tasks: [{ jobId: "remaining" }] },
+  ]);
+  expect(SettingsService.read(context).sync.blockedKeywords).toEqual([]);
+  expect(() => MatchingService.resolve(context, "cancelled", 10)).toThrow(
+    "候选已处理",
+  );
+
+  MatchingService.resolve(context, "remaining", 10);
+  expect(JobsService.page(context, { state: "pending" }).items).toHaveLength(1);
+  expect(JobsService.get(context, "cancelled")?.state).toBe("cancelled");
+  expect(
+    context.database.orm
+      .select()
+      .from(jobs)
+      .all()
+      .filter((job) => job.dedupeKey === "cancelled"),
+  ).toHaveLength(1);
+});
+
 test("blocking a work clears its pending confirmations across seasons without retrying unrelated work", () => {
   const context = testContext();
   disposables.push(context.dispose);

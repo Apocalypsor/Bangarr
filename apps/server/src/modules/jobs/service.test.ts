@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { join } from "node:path";
 import { openDatabase } from "@server/db/client";
-import { jobs } from "@server/db/schema";
+import { candidates, jobs } from "@server/db/schema";
 import { JobsService } from "@server/modules/jobs/service";
 import { testContext, testSyncPayload } from "@server/utils/testing";
 
@@ -121,6 +121,91 @@ test("expired final attempt becomes failed and running writes cannot be cancelle
   expect(() => JobsService.cancel(queue, job.id)).toThrow("只能取消");
   advance(1001);
   expect(JobsService.claim(queue, "b")).toBeNull();
+  expect(JobsService.get(queue, job.id)?.state).toBe("failed");
+});
+
+test("failed tasks can be cancelled without deleting history or restarting after recovery", () => {
+  const { queue, advance, directory } = fixture();
+  const { job } = JobsService.enqueue(queue, {
+    kind: "plex-scan",
+    dedupeKey: "failed-scan",
+    payload: {},
+  });
+  JobsService.claim(queue, "worker");
+  JobsService.reportProgress(queue, job.id, "worker", "已扫描部分项目", {
+    scan: { scanned: 5, failedItems: 1 },
+  });
+  JobsService.fail(queue, job.id, "worker", "部分项目失败", false);
+  expect(JobsService.page(queue, { state: "failed" }).total).toBe(1);
+
+  advance(1000);
+  expect(JobsService.cancel(queue, job.id)).toMatchObject({
+    state: "cancelled",
+    lastError: "部分项目失败",
+    result: { scan: { scanned: 5, failedItems: 1 } },
+    attempt: 1,
+    updatedAt: 11000,
+    leaseOwner: null,
+    leaseUntil: null,
+  });
+  expect(JobsService.page(queue, { state: "failed" })).toMatchObject({
+    total: 0,
+    counts: { failed: 0, cancelled: 1 },
+  });
+
+  const reopened = openDatabase(join(directory, "test.sqlite"));
+  try {
+    const restored = { database: reopened, now: () => 1000000 };
+    expect(JobsService.claim(restored, "other-worker")).toBeNull();
+    expect(JobsService.get(restored, job.id)?.state).toBe("cancelled");
+    const retry = JobsService.retry(restored, job.id).job;
+    expect(retry.id).not.toBe(job.id);
+    expect(retry).toMatchObject({ state: "pending", attempt: 0 });
+  } finally {
+    reopened.close();
+  }
+});
+
+test("cancelling a retry closes earlier matching candidates and rolls back if cleanup fails", () => {
+  const { queue } = fixture();
+  const { job } = JobsService.enqueue(queue, {
+    kind: "sync",
+    dedupeKey: "unmatched",
+    payload: testSyncPayload(),
+  });
+  JobsService.claim(queue, "worker");
+  JobsService.fail(queue, job.id, "worker", "需要手动匹配", false);
+  queue.database.orm
+    .insert(candidates)
+    .values({
+      id: "candidate",
+      jobId: job.id,
+      title: "番剧",
+      season: 1,
+      choices: [],
+      state: "pending",
+      createdAt: 0,
+    })
+    .run();
+  const retry = JobsService.retry(queue, job.id).job;
+  queue.database.sqlite.exec(`
+    CREATE TRIGGER prevent_candidate_close BEFORE UPDATE ON candidates
+    BEGIN SELECT RAISE(ABORT, 'candidate cleanup failed'); END;
+  `);
+  expect(() => JobsService.cancel(queue, retry.id)).toThrow(
+    "candidate cleanup failed",
+  );
+  expect(JobsService.get(queue, retry.id)?.state).toBe("pending");
+  expect(queue.database.orm.select().from(candidates).get()?.state).toBe(
+    "pending",
+  );
+
+  queue.database.sqlite.exec("DROP TRIGGER prevent_candidate_close");
+  JobsService.cancel(queue, retry.id);
+  expect(queue.database.orm.select().from(candidates).get()?.state).toBe(
+    "rejected",
+  );
+  expect(JobsService.claim(queue, "worker")).toBeNull();
   expect(JobsService.get(queue, job.id)?.state).toBe("failed");
 });
 

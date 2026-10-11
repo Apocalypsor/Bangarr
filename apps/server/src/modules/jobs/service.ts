@@ -1,7 +1,7 @@
 import { transaction } from "@server/db/client";
 import {
   assignJobLease,
-  cancelPendingJob,
+  cancelJob,
   completeJob,
   findActiveJob,
   findReadyJob,
@@ -13,6 +13,7 @@ import {
   updateJobFailure,
   updateLeasedJob,
 } from "@server/db/jobs";
+import { closeJobCandidates } from "@server/db/matching";
 import type { JobsQuery } from "@server/modules/jobs/model";
 import type { EnqueueInput, Job } from "@server/modules/jobs/types";
 import { scanReport, taskProgress } from "@server/modules/jobs/utils";
@@ -210,18 +211,33 @@ export abstract class JobsService {
   }
 
   static cancel(context: Pick<AppContext, "database" | "now">, id: string) {
-    const job = JobsService.get(context, id);
+    return transaction(
+      context.database,
+      () => {
+        // 与领取和手动匹配串行执行，防止取消的任务被再次入队。
+        const job = cancelJob(context.database, id, {
+          state: "cancelled",
+          leaseOwner: null,
+          leaseUntil: null,
+          updatedAt: (context.now ?? Date.now)(),
+        });
 
-    if (!job) throw new AppError(404, "JOB_NOT_FOUND", "任务不存在");
+        if (!job) {
+          if (!JobsService.get(context, id))
+            throw new AppError(404, "JOB_NOT_FOUND", "任务不存在");
 
-    // 运行中的远端写操作无法可靠撤销，不将其伪装成已取消。
-    if (job.state !== "pending")
-      throw new AppError(409, "JOB_NOT_PENDING", "只能取消尚未执行的任务");
+          throw new AppError(
+            409,
+            "JOB_NOT_CANCELLABLE",
+            "只能取消等待执行或已失败的任务",
+          );
+        }
 
-    return cancelPendingJob(context.database, id, {
-      state: "cancelled",
-      updatedAt: (context.now ?? Date.now)(),
-    });
+        closeJobCandidates(context.database, id, "rejected");
+        return job;
+      },
+      "immediate",
+    );
   }
 
   static retry(context: Pick<AppContext, "database" | "now">, id: string) {

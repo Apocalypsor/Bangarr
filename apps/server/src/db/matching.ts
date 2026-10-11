@@ -111,6 +111,25 @@ export const updateCandidateState = (
     .where(eq(candidates.id, id))
     .run();
 
+export const closeJobCandidates = (
+  database: AppDatabase,
+  jobId: string,
+  state: "confirmed" | "rejected",
+) =>
+  database.orm
+    .update(candidates)
+    .set({ state })
+    .where(
+      and(
+        eq(candidates.state, "pending"),
+        sql`${candidates.jobId} in (
+          select ${jobs.id} from ${jobs}
+          where ${jobs.dedupeKey} = (select ${jobs.dedupeKey} from ${jobs} where ${jobs.id} = ${jobId})
+        )`,
+      ),
+    )
+    .run();
+
 export const findSeasonMappings = (database: AppDatabase, season: number) =>
   database.orm
     .select()
