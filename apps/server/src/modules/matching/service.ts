@@ -14,7 +14,6 @@ import {
   getPendingCandidate,
   listMappings,
   listPendingCandidateDetails,
-  listPendingCandidates,
   updateCandidateState,
   updateMapping,
   upsertMapping,
@@ -67,6 +66,7 @@ type PendingCandidateDetail = ReturnType<
   typeof listPendingCandidateDetails
 >[number];
 type CandidateGroup = PendingCandidateDetail["candidate"] & {
+  episode: number;
   taskCount: number;
   tasks: (Omit<PendingCandidateDetail, "candidate"> & { jobId: string })[];
 };
@@ -83,9 +83,16 @@ export abstract class MatchingService {
 
     const names = titleNames(item.title, item.originalTitle);
 
-    const mapping = [item.season, -1].flatMap((season) =>
-      names.flatMap((name) =>
-        rules.filter((rule) => rule.season === season && rule.title === name),
+    const mapping = [item.episode, -1].flatMap((episode) =>
+      [item.season, -1].flatMap((season) =>
+        names.flatMap((name) =>
+          rules.filter(
+            (rule) =>
+              rule.episode === episode &&
+              rule.season === season &&
+              rule.title === name,
+          ),
+        ),
       ),
     )[0];
 
@@ -94,6 +101,7 @@ export abstract class MatchingService {
         step: "mapping",
         subjectId: mapping.subjectId,
         offset: mapping.episodeOffset,
+        episode: mapping.episode,
       });
 
       const episode = await MatchingService.resolveEpisode(
@@ -104,7 +112,9 @@ export abstract class MatchingService {
         // As in Bangumi-syncer's custom mapping step, a later-season ID is
         // an entry into the relation chain, not a promise that it owns every ep.
         !mapping.resolveSeries &&
-          (item.season <= 1 || mapping.episodeOffset !== 0),
+          (mapping.episode !== -1 ||
+            item.season <= 1 ||
+            mapping.episodeOffset !== 0),
         trace,
         !mapping.resolveSeries,
       );
@@ -620,8 +630,16 @@ export abstract class MatchingService {
 
   static save(context: AppContext, input: MappingInput, id?: string) {
     const title = input.title.trim();
+    const episode = input.episode ?? -1;
 
     if (!title) throw new AppError(400, "TITLE_REQUIRED", "映射标题不能为空");
+
+    if (episode !== -1 && (input.season === -1 || input.resolveSeries))
+      throw new AppError(
+        400,
+        "MAPPING_SCOPE",
+        "单集映射需要指定季度和条目，不能自动识别季度",
+      );
 
     if (id)
       return transaction(
@@ -634,18 +652,20 @@ export abstract class MatchingService {
             context.database,
             title,
             input.season,
+            episode,
           );
 
           if (conflict && conflict.id !== id)
             throw new AppError(
               409,
               "MAPPING_EXISTS",
-              "此标题和季度的映射已存在",
+              "此标题、季度和集数范围的映射已存在",
             );
 
           return updateMapping(context.database, id, {
             ...input,
             title,
+            episode,
             resolveSeries: input.resolveSeries ?? false,
           });
         },
@@ -663,6 +683,7 @@ export abstract class MatchingService {
         id: crypto.randomUUID(),
         ...input,
         title,
+        episode,
         createdAt: Date.now(),
       },
     );
@@ -680,12 +701,14 @@ export abstract class MatchingService {
     for (const { candidate, ...detail } of listPendingCandidateDetails(
       context.database,
     )) {
-      const key = JSON.stringify([candidate.title, candidate.season]);
+      const episode = candidateScope(detail);
+      const key = JSON.stringify([candidate.title, candidate.season, episode]);
       const group = groups.get(key);
 
       if (!group) {
         groups.set(key, {
           ...candidate,
+          episode,
           taskCount: 1,
           tasks: [{ ...detail, jobId: candidate.jobId }],
         });
@@ -727,16 +750,23 @@ export abstract class MatchingService {
         if (!candidate)
           throw new AppError(404, "CANDIDATE_MISSING", "候选已处理或不存在");
 
-        const related = listPendingCandidates(
+        const details = listPendingCandidateDetails(
           context.database,
           candidate.title,
           subjectId ? candidate.season : undefined,
         );
+        const episode = candidateScope(
+          details.find((row) => row.candidate.id === id),
+        );
+        const related = details
+          .filter((row) => !subjectId || candidateScope(row) === episode)
+          .map((row) => row.candidate);
 
         if (subjectId) {
           MatchingService.save(context, {
             title: candidate.title,
             season: candidate.season,
+            episode,
             subjectId,
             episodeOffset,
           });
@@ -774,3 +804,7 @@ export abstract class MatchingService {
     );
   }
 }
+
+const candidateScope = (
+  detail?: Pick<PendingCandidateDetail, "episode" | "mediaType">,
+) => (detail?.mediaType === "episode" && detail.episode === 0 ? 0 : -1);

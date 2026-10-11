@@ -8,7 +8,7 @@ import { testContext } from "@server/utils/testing";
 test.each([false, true])(
   "opening a database migrates legacy Plex settings once (deleted accounts: %s)",
   (deleted) => {
-    const context = testContext();
+    const context = testContext({ legacy: true });
     const token = context.vault.seal("preserved-secret");
     const legacy = {
       url: "http://plex",
@@ -34,7 +34,6 @@ test.each([false, true])(
       })
       .run();
     if (deleted) writePlexAccounts(context.database, []);
-    context.database.sqlite.exec("DROP TABLE __drizzle_migrations");
     context.database.close();
     const database = openDatabase(context.database.path);
     try {
@@ -84,65 +83,68 @@ test("general settings cannot reintroduce a second Plex configuration", () => {
   }
 });
 
-test("existing Plex accounts win over stale configuration and failed migration keeps the original", () => {
-  const context = testContext();
-  try {
-    const legacy = {
-      url: "http://old",
-      userName: "alice",
-      token: "encrypted",
-      enabled: true,
-      libraryIds: [],
-      cron: "0 * * * *",
-    };
-    const current = {
-      ...legacy,
-      id: "current",
-      name: "Current",
-      serverId: "server",
-      url: "http://current",
-    };
-    SettingsService.set(
-      context,
-      "app",
-      JSON.stringify({ plex: legacy, sync: { animeCompleted: true } }),
-    );
-    writePlexAccounts(context.database, [current]);
-    context.database.sqlite.exec("DROP TABLE __drizzle_migrations");
-    openDatabase(context.database.path).close();
-    expect(readPlexAccounts(context.database)).toEqual([current]);
-    expect(SettingsService.read(context).sync.animeCompleted).toBe(true);
+test.each([false, true])(
+  "legacy Plex migration preserves data (invalid configuration: %s)",
+  (invalidConfig) => {
+    const context = testContext({ legacy: true });
+    try {
+      const legacy = {
+        url: "http://old",
+        userName: "alice",
+        token: "encrypted",
+        enabled: true,
+        libraryIds: [],
+        cron: "0 * * * *",
+      };
+      const current = {
+        ...legacy,
+        id: "current",
+        name: "Current",
+        serverId: "server",
+        url: "http://current",
+      };
+      SettingsService.set(
+        context,
+        "app",
+        JSON.stringify({ plex: legacy, sync: { animeCompleted: true } }),
+      );
+      if (!invalidConfig) {
+        writePlexAccounts(context.database, [current]);
+        openDatabase(context.database.path).close();
+        expect(readPlexAccounts(context.database)).toEqual([current]);
+        expect(SettingsService.read(context).sync.animeCompleted).toBe(true);
+        return;
+      }
 
-    context.database.sqlite.exec(
-      "DELETE FROM settings WHERE key='plex-accounts'",
-    );
-    const invalid = JSON.stringify({ plex: { ...legacy, libraryIds: 1 } });
-    SettingsService.set(context, "app", invalid);
-    context.database.sqlite.exec("DROP TABLE __drizzle_migrations");
-    context.database.sqlite.exec("DROP INDEX jobs_dedupe_key");
-    expect(() => openDatabase(context.database.path)).toThrow();
-    expect(SettingsService.get(context, "app")).toBe(invalid);
-    expect(SettingsService.get(context, "plex-accounts")).toBeUndefined();
-    expect(
-      context.database.sqlite
-        .query("SELECT count(*) AS total FROM __drizzle_migrations")
-        .get(),
-    ).toEqual({ total: 0 });
-    expect(
-      context.database.sqlite
-        .query("SELECT name FROM sqlite_master WHERE name='jobs_dedupe_key'")
-        .all(),
-    ).toEqual([]);
-    // Fix the data and retry: all pending schema/data changes commit together.
-    SettingsService.set(context, "app", JSON.stringify({ plex: legacy }));
-    openDatabase(context.database.path).close();
-    expect(readPlexAccounts(context.database)[0]?.id).toBe("default");
-    expect(
-      context.database.sqlite
-        .query("SELECT count(*) AS total FROM __drizzle_migrations")
-        .get(),
-    ).toEqual({ total: 3 });
-  } finally {
-    context.dispose();
-  }
-});
+      context.database.sqlite.exec(
+        "DELETE FROM settings WHERE key='plex-accounts'",
+      );
+      const invalid = JSON.stringify({ plex: { ...legacy, libraryIds: 1 } });
+      SettingsService.set(context, "app", invalid);
+      expect(() => openDatabase(context.database.path)).toThrow();
+      expect(SettingsService.get(context, "app")).toBe(invalid);
+      expect(SettingsService.get(context, "plex-accounts")).toBeUndefined();
+      expect(
+        context.database.sqlite
+          .query("SELECT count(*) AS total FROM __drizzle_migrations")
+          .get(),
+      ).toEqual({ total: 0 });
+      expect(
+        context.database.sqlite
+          .query("SELECT name FROM sqlite_master WHERE name='jobs_dedupe_key'")
+          .all(),
+      ).toEqual([]);
+      // Fix the data and retry: all pending schema/data changes commit together.
+      SettingsService.set(context, "app", JSON.stringify({ plex: legacy }));
+      openDatabase(context.database.path).close();
+      expect(readPlexAccounts(context.database)[0]?.id).toBe("default");
+      expect(
+        context.database.sqlite
+          .query("SELECT count(*) AS total FROM __drizzle_migrations")
+          .get(),
+      ).toEqual({ total: 4 });
+    } finally {
+      context.dispose();
+    }
+  },
+);

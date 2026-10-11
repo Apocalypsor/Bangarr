@@ -4,6 +4,9 @@ type Candidate = NonNullable<
   ReturnType<typeof useCandidatesQuery>["data"]
 >[number];
 
+export const mappingScope = (episode: number) =>
+  episode === -1 ? "整季" : `仅 E${String(episode).padStart(2, "0")}`;
+
 export const candidateEpisodes = (
   candidate: Pick<Candidate, "season" | "tasks">,
 ) => {

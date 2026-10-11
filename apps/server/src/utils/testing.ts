@@ -1,15 +1,21 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openDatabase } from "@server/db/client";
 import { writePlexAccounts } from "@server/db/plex";
+import * as schema from "@server/db/schema";
 import type { PlexAccountInput } from "@server/modules/plex/model";
 import type { SyncPayload } from "@server/tasks/types";
 import { SecretVault } from "@server/utils/secrets";
+import { drizzle } from "drizzle-orm/bun-sqlite";
 
-export const testContext = () => {
+export const testContext = (options: { legacy?: boolean } = {}) => {
   const directory = mkdtempSync(join(tmpdir(), "bangumi-test-"));
-  const database = openDatabase(join(directory, "test.sqlite"));
+  const path = join(directory, "test.sqlite");
+  const database = options.legacy
+    ? openLegacyTestDatabase(path)
+    : openDatabase(path);
   const vault = new SecretVault(crypto.getRandomValues(new Uint8Array(32)));
 
   return {
@@ -21,6 +27,19 @@ export const testContext = () => {
       rmSync(directory, { recursive: true, force: true });
     },
   };
+};
+
+// Use the actual pre-migration schema, not a current database with its history erased.
+export const openLegacyTestDatabase = (path: string) => {
+  const sqlite = new Database(path, { create: true, strict: true });
+  sqlite.exec(
+    readFileSync(
+      new URL("../../migrations/0000_baseline.sql", import.meta.url),
+      "utf8",
+    ),
+  );
+  const orm = drizzle(sqlite, { schema });
+  return { path, sqlite, orm, close: () => sqlite.close() };
 };
 
 export const seedPlexAccount = (

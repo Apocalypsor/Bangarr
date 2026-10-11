@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDatabase } from "@server/db/client";
 import { mappings } from "@server/db/schema";
+import { openLegacyTestDatabase } from "@server/utils/testing";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 
-test("fresh schema persists mappings and enforces unique title and season", () => {
+test("fresh schema persists mappings and enforces unique title, season and episode", () => {
   const directory = mkdtempSync(join(tmpdir(), "bangarr-schema-"));
   const path = join(directory, "database.sqlite");
 
@@ -59,14 +60,88 @@ test("fresh schema persists mappings and enforces unique title and season", () =
   }
 });
 
+test("mapping migration preserves existing offsets and permits an independent E00 rule", () => {
+  const directory = mkdtempSync(join(tmpdir(), "bangarr-mapping-migration-"));
+  const path = join(directory, "database.sqlite");
+  const migrations = readMigrationFiles({
+    migrationsFolder: fileURLToPath(
+      new URL("../../migrations", import.meta.url),
+    ),
+  });
+  const old = openLegacyTestDatabase(path);
+  try {
+    // Reproduce a database that has already recorded migrations 0000–0002.
+    old.sqlite.exec(
+      "CREATE TABLE __drizzle_migrations (id INTEGER PRIMARY KEY, hash text NOT NULL, created_at numeric)",
+    );
+    for (const [index, migration] of migrations.slice(0, 3).entries()) {
+      if (index > 0)
+        for (const statement of migration.sql) old.sqlite.exec(statement);
+      old.sqlite
+        .query(
+          "INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)",
+        )
+        .run(migration.hash, migration.folderMillis);
+    }
+    old.sqlite
+      .query(
+        "INSERT INTO mappings (id, title, season, subject_id, episode_offset, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run("kept", "作品", 2, 444557, 25, 7);
+  } finally {
+    old.close();
+  }
+  try {
+    const database = openDatabase(path);
+    try {
+      const original = database.orm.select().from(mappings).get();
+      expect(original).toEqual({
+        id: "kept",
+        title: "作品",
+        season: 2,
+        episode: -1,
+        subjectId: 444557,
+        episodeOffset: 25,
+        resolveSeries: false,
+        createdAt: 7,
+      });
+      if (!original) throw new Error("Missing migrated mapping");
+      const single = {
+        ...original,
+        id: "zero",
+        episode: 0,
+        subjectId: 373247,
+        episodeOffset: 1,
+      };
+      database.orm.insert(mappings).values(single).run();
+      expect(() =>
+        database.orm
+          .insert(mappings)
+          .values({ ...single, id: "duplicate" })
+          .run(),
+      ).toThrow();
+    } finally {
+      database.close();
+    }
+    const reopened = openDatabase(path);
+    try {
+      expect(reopened.orm.select().from(mappings).all()).toHaveLength(2);
+      expect(reopened.sqlite.query("PRAGMA integrity_check").get()).toEqual({
+        integrity_check: "ok",
+      });
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("opening an existing database adds query indexes without changing its rows", () => {
   const directory = mkdtempSync(join(tmpdir(), "bangarr-indexes-"));
   const path = join(directory, "database.sqlite");
   try {
-    const db = openDatabase(path);
-    db.sqlite.exec(
-      "DROP TABLE __drizzle_migrations; DROP INDEX jobs_dedupe_key; DROP INDEX candidates_job_state; DROP INDEX candidates_state;",
-    );
+    const db = openLegacyTestDatabase(path);
     db.sqlite
       .query(
         "INSERT INTO jobs (id, kind, dedupe_key, payload, state, available_at, created_at, updated_at) VALUES ('kept','sync','key','{}','failed',0,0,0)",

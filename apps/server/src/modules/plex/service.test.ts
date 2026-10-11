@@ -15,8 +15,8 @@ afterEach(() => {
   for (const dispose of disposables.splice(0)) dispose();
 });
 
-const fixture = () => {
-  const context = testContext();
+const fixture = (options: { legacy?: boolean } = {}) => {
+  const context = testContext(options);
   disposables.push(context.dispose);
   const requests: { host: string; token: string | null }[] = [];
   const transport = async (request: Request) => {
@@ -146,7 +146,7 @@ test("Plex accounts isolate tokens, scans and webhook bindings across servers", 
 });
 
 test("existing single-Plex credentials and bindings survive edits and deleting all accounts", async () => {
-  const context = fixture();
+  const context = fixture({ legacy: true });
   SettingsService.set(
     context,
     "app",
@@ -167,7 +167,6 @@ test("existing single-Plex credentials and bindings survive edits and deleting a
       createdAt: 0,
     })
     .run();
-  context.database.sqlite.exec("DROP TABLE __drizzle_migrations");
   const upgraded = openDatabase(context.database.path);
   disposables.unshift(upgraded.close);
   context.database = upgraded;

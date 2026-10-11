@@ -114,6 +114,84 @@ describe("management authentication", () => {
       resolveSeries: true,
     });
   });
+  test("mapping API keeps single episodes independent and rejects incompatible scopes", async () => {
+    const { app } = fixture();
+    const cookie = await login(app);
+    const input = { title: "作品", season: 2, subjectId: 10, episodeOffset: 0 };
+    const season = (await (
+      await app.handle(request("/mappings", "POST", input, cookie))
+    ).json()) as { id: string };
+    const single = (await (
+      await app.handle(
+        request(
+          "/mappings",
+          "POST",
+          { ...input, episode: 0, subjectId: 20, episodeOffset: 1 },
+          cookie,
+        ),
+      )
+    ).json()) as { id: string };
+    expect(single).toMatchObject({
+      episode: 0,
+      subjectId: 20,
+      episodeOffset: 1,
+    });
+    expect(single.id).not.toBe(season.id);
+    const updated = await (
+      await app.handle(
+        request(
+          "/mappings",
+          "POST",
+          { ...input, episode: 0, subjectId: 21, episodeOffset: 2 },
+          cookie,
+        ),
+      )
+    ).json();
+    expect(updated).toMatchObject({
+      id: single.id,
+      subjectId: 21,
+      episodeOffset: 2,
+    });
+    expect(
+      (
+        await app.handle(
+          request(`/mappings/${single.id}`, "PUT", input, cookie),
+        )
+      ).status,
+    ).toBe(409);
+    expect(
+      (
+        await app.handle(
+          request(
+            `/mappings/${single.id}`,
+            "PUT",
+            { ...input, episode: 3 },
+            cookie,
+          ),
+        )
+      ).status,
+    ).toBe(200);
+    for (const invalid of [
+      { episode: 0, season: -1 },
+      { episode: 0, resolveSeries: true },
+      { episode: -2 },
+      { episode: 1.5 },
+    ]) {
+      const response = await app.handle(
+        request("/mappings", "POST", { ...input, ...invalid }, cookie),
+      );
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(response.status).toBeLessThan(500);
+    }
+    const rows = await (
+      await app.handle(request("/mappings", "GET", undefined, cookie))
+    ).json();
+    expect(rows).toHaveLength(2);
+    expect(rows).toContainEqual(season);
+    expect(rows).toContainEqual(
+      expect.objectContaining({ id: single.id, episode: 3 }),
+    );
+  });
   test("empty configured public origin uses the request origin for same-site login", async () => {
     const context = fixture();
     const app = createApp({ ...context, publicOrigin: "" });

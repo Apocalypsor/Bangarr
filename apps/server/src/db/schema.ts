@@ -128,6 +128,7 @@ export const mappings = sqliteTable(
     title: text("title").notNull(),
     season: integer("season").notNull(),
     subjectId: integer("subject_id").notNull(),
+    episode: integer("episode").notNull().default(-1),
     episodeOffset: integer("episode_offset").notNull().default(0),
     resolveSeries: integer("resolve_series", { mode: "boolean" })
       .notNull()
@@ -135,7 +136,11 @@ export const mappings = sqliteTable(
     createdAt: integer("created_at").notNull(),
   },
   (table) => [
-    uniqueIndex("mapping_title_season").on(table.title, table.season),
+    uniqueIndex("mapping_title_season_episode").on(
+      table.title,
+      table.season,
+      table.episode,
+    ),
   ],
 );
 

@@ -412,7 +412,7 @@ test("a matching airdate does not turn episode zero into a different numbered ch
   );
 });
 
-test("manual mappings accept zero, preserve offsets and reject negative effective episodes", async () => {
+test("single-episode mappings preserve offsets and reject negative effective episodes", async () => {
   const { context, api } = fixture([
     { id: 2, name: "番剧 第二季", start: 0, count: 3 },
   ]);
@@ -431,6 +431,7 @@ test("manual mappings accept zero, preserve offsets and reject negative effectiv
     MatchingService.save(context, {
       title: item.title,
       season: 2,
+      episode: 0,
       subjectId: 2,
       episodeOffset: offset,
     });
@@ -446,6 +447,56 @@ test("manual mappings accept zero, preserve offsets and reject negative effectiv
         mapped: true,
       });
   }
+});
+
+test("a single-episode rule pins its subject and takes precedence over season and title aliases", async () => {
+  const { context, api } = fixture([
+    { id: 1, name: "番剧", count: 3 },
+    { id: 2, name: "番剧 第二季", count: 3 },
+  ]);
+  for (const season of [-1, 2])
+    MatchingService.save(context, {
+      title: "番剧",
+      season,
+      subjectId: 2,
+      episodeOffset: 0,
+    });
+  const override = MatchingService.save(context, {
+    title: "Original Title",
+    season: 2,
+    episode: 1,
+    subjectId: 1,
+    episodeOffset: 0,
+  });
+  const item = {
+    ...testSyncPayload().item,
+    originalTitle: "Original Title",
+    season: 2,
+  };
+  expect(
+    await MatchingService.match(context, item, api, defaultSettings),
+  ).toMatchObject({
+    subjectId: 1,
+    episodeId: 1001,
+  });
+  expect(
+    await MatchingService.match(
+      context,
+      { ...item, episode: 2 },
+      api,
+      defaultSettings,
+    ),
+  ).toMatchObject({
+    subjectId: 2,
+    episodeId: 2002,
+  });
+  MatchingService.delete(context, override.id);
+  expect(
+    await MatchingService.match(context, item, api, defaultSettings),
+  ).toMatchObject({
+    subjectId: 2,
+    episodeId: 2001,
+  });
 });
 
 test("split cours in the same declared season use cumulative local episodes in relation order", async () => {
@@ -668,6 +719,62 @@ test("cancelling one failed task leaves its matching group intact and prevents g
   ).toHaveLength(1);
 });
 
+test.each([true, false])(
+  "E00 confirmation stays separate across accounts (confirm zero first: %s)",
+  (zeroFirst) => {
+    const context = testContext();
+    disposables.push(context.dispose);
+    const title = "同一作品";
+    for (const [id, episode] of [
+      ["zero-a", 0],
+      ["zero-b", 0],
+      ["normal-a", 1],
+      ["normal-b", 24],
+    ] as const)
+      seedCandidate(context, { id, title, episode, season: 2, accountId: id });
+    expect(
+      MatchingService.candidates(context).map((group) => ({
+        episode: group.episode,
+        taskCount: group.taskCount,
+      })),
+    ).toEqual([
+      { episode: -1, taskCount: 2 },
+      { episode: 0, taskCount: 2 },
+    ]);
+    const confirmZero = () =>
+      MatchingService.resolve(context, "zero-a", 101, 1);
+    const confirmNormal = () =>
+      MatchingService.resolve(context, "normal-a", 102, 0);
+    (zeroFirst ? confirmZero : confirmNormal)();
+    expect(MatchingService.candidates(context)).toMatchObject([
+      { episode: zeroFirst ? -1 : 0, taskCount: 2 },
+    ]);
+    const pending = context.database.orm
+      .select()
+      .from(jobs)
+      .all()
+      .filter((job) => job.state === "pending");
+    expect(pending).toHaveLength(2);
+    expect(
+      pending.every((job) =>
+        job.dedupeKey.startsWith(zeroFirst ? "zero" : "normal"),
+      ),
+    ).toBe(true);
+    (zeroFirst ? confirmNormal : confirmZero)();
+    expect(MatchingService.candidates(context)).toHaveLength(0);
+    const rules = MatchingService.mappings(context).sort(
+      (a, b) => a.episode - b.episode,
+    );
+    expect(rules).toMatchObject([
+      { episode: -1, subjectId: 102, episodeOffset: 0 },
+      { episode: 0, subjectId: 101, episodeOffset: 1 },
+    ]);
+    expect(JobsService.page(context, { state: "pending" }).items).toHaveLength(
+      4,
+    );
+  },
+);
+
 test("blocking a work clears its pending confirmations across seasons without retrying unrelated work", () => {
   const context = testContext();
   disposables.push(context.dispose);
@@ -675,8 +782,15 @@ test("blocking a work clears its pending confirmations across seasons without re
     ["a", "屏蔽作品", 1],
     ["b", "屏蔽作品", 2],
     ["c", "保留作品", 1],
+    ["zero", "屏蔽作品", 2],
   ] as const) {
-    seedCandidate(context, { id, title, season, episode: 1, accountId: "a" });
+    seedCandidate(context, {
+      id,
+      title,
+      season,
+      episode: id === "zero" ? 0 : 1,
+      accountId: "a",
+    });
   }
 
   MatchingService.resolve(context, "a", null);
@@ -834,6 +948,23 @@ test.each([373247, 444557])(
       subjectId: entryId,
       episodeOffset: 0,
     });
+    seedCandidate(context, {
+      id: "prologue",
+      title: item.title,
+      season: 2,
+      episode: 0,
+      accountId: "a",
+    });
+    MatchingService.resolve(context, "prologue", 373247, 1);
+    expect(MatchingService.mappings(context)).toHaveLength(2);
+    expect(
+      await MatchingService.match(
+        context,
+        { ...item, episode: 0 },
+        api,
+        defaultSettings,
+      ),
+    ).toMatchObject({ subjectId: 373247, episodeId: 1212094 });
     for (const expected of mushokuSeasonTwo
       .flatMap((row) => row.episodes)
       .filter((row) => row.sort > 0)) {
@@ -895,14 +1026,6 @@ test.each([373247, 444557])(
     await expect(
       MatchingService.match(
         context,
-        { ...item, episode: 0 },
-        api,
-        defaultSettings,
-      ),
-    ).rejects.toBeInstanceOf(NeedsConfirmation);
-    await expect(
-      MatchingService.match(
-        context,
         { ...item, episode: 26 },
         api,
         defaultSettings,
@@ -920,6 +1043,15 @@ test.each([373247, 444557])(
     });
     MatchingService.resolve(context, "cour-boundary", entryId);
     expect(MatchingService.candidates(context)).toHaveLength(0);
+    expect(MatchingService.mappings(context)).toHaveLength(2);
+    expect(
+      await MatchingService.match(
+        context,
+        { ...item, episode: 0 },
+        api,
+        defaultSettings,
+      ),
+    ).toMatchObject({ subjectId: 373247, episodeId: 1212094 });
     for (const sort of [13, 14, 17, 24]) {
       const expected = mushokuSeasonTwo
         .find((row) => row.subject.id === 444557)

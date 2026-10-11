@@ -12,11 +12,18 @@ export const findMappingIdentity = (
   database: AppDatabase,
   title: string,
   season: number,
+  episode: number,
 ) =>
   database.orm
     .select()
     .from(mappings)
-    .where(and(eq(mappings.title, title), eq(mappings.season, season)))
+    .where(
+      and(
+        eq(mappings.title, title),
+        eq(mappings.season, season),
+        eq(mappings.episode, episode),
+      ),
+    )
     .get();
 
 export const updateMapping = (
@@ -40,7 +47,7 @@ export const upsertMapping = (
     .insert(mappings)
     .values(value)
     .onConflictDoUpdate({
-      target: [mappings.title, mappings.season],
+      target: [mappings.title, mappings.season, mappings.episode],
       set: conflictChanges,
     })
     .returning()
@@ -49,24 +56,6 @@ export const upsertMapping = (
 export const deleteMapping = (database: AppDatabase, id: string) =>
   database.orm.delete(mappings).where(eq(mappings.id, id)).run();
 
-export const listPendingCandidates = (
-  database: AppDatabase,
-  title?: string,
-  season?: number,
-) =>
-  database.orm
-    .select()
-    .from(candidates)
-    .where(
-      and(
-        eq(candidates.state, "pending"),
-        title === undefined ? undefined : eq(candidates.title, title),
-        season === undefined ? undefined : eq(candidates.season, season),
-      ),
-    )
-    .orderBy(desc(candidates.createdAt), desc(candidates.id))
-    .all();
-
 export const getPendingCandidate = (database: AppDatabase, id: string) =>
   database.orm
     .select()
@@ -74,7 +63,11 @@ export const getPendingCandidate = (database: AppDatabase, id: string) =>
     .where(and(eq(candidates.id, id), eq(candidates.state, "pending")))
     .get();
 
-export const listPendingCandidateDetails = (database: AppDatabase) =>
+export const listPendingCandidateDetails = (
+  database: AppDatabase,
+  title?: string,
+  season?: number,
+) =>
   database.orm
     .select({
       candidate: candidates,
@@ -96,7 +89,13 @@ export const listPendingCandidateDetails = (database: AppDatabase) =>
       accounts,
       eq(accounts.id, sql`json_extract(${jobs.payload}, '$.accountId')`),
     )
-    .where(eq(candidates.state, "pending"))
+    .where(
+      and(
+        eq(candidates.state, "pending"),
+        title === undefined ? undefined : eq(candidates.title, title),
+        season === undefined ? undefined : eq(candidates.season, season),
+      ),
+    )
     .orderBy(desc(candidates.createdAt), desc(candidates.id))
     .all();
 
