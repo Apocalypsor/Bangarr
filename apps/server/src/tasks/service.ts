@@ -330,12 +330,14 @@ export abstract class TaskService {
         (item.mediaType === "movie"
           ? config.sync.movieCompleted
           : config.sync.animeCompleted)
-      )
-        await api.completeIfWatched(
+      ) {
+        const completion = await api.completeIfWatched(
           match.subjectId,
           account.private,
           item.mediaType === "movie",
         );
+        result.changed ||= completion.changed;
+      }
 
       transaction(
         context.database,

@@ -7,14 +7,19 @@ import type {
   BangumiSubject,
   BangumiUser,
 } from "@server/clients/bangumi/types";
-import { RemoteError } from "@server/utils/errors";
+import { AppError, RemoteError } from "@server/utils/errors";
 import type { HttpTransport } from "@server/utils/http";
 import { HttpClient } from "@server/utils/http";
 
 export class BangumiClient {
   private http: HttpClient;
 
-  constructor(url: string, token = "", transport?: HttpTransport) {
+  constructor(
+    url: string,
+    token = "",
+    transport?: HttpTransport,
+    private username?: string,
+  ) {
     this.http = new HttpClient(
       `${url.replace(/\/$/, "")}/v0`,
       "Bangumi",
@@ -90,9 +95,16 @@ export class BangumiClient {
   }
 
   async collection(subjectId: number) {
+    // Subject collection GET requires a username; '-' is only supported by
+    // the authenticated write endpoints and episode collection endpoints.
+    const username = this.username ?? (await this.me()).username;
+    if (!username?.trim() || username === "-")
+      throw new AppError(502, "INVALID_ACCOUNT", "Bangumi 返回了无效账号");
+    this.username = username;
+
     try {
       return await this.http.json<BangumiCollection>(
-        `users/-/collections/${subjectId}`,
+        `users/${encodeURIComponent(username)}/collections/${subjectId}`,
       );
     } catch (error) {
       if (error instanceof RemoteError && error.remoteStatus === 404)
@@ -125,10 +137,13 @@ export class BangumiClient {
   async markWatched(subjectId: number, episodeId: number, isPrivate: boolean) {
     const collection = await this.collection(subjectId);
 
-    if (!collection) await this.setCollection(subjectId, 3, isPrivate);
+    if (collection?.type === 2) return { changed: false };
+
+    const changesSubject = !collection || [1, 4].includes(collection.type);
+    if (changesSubject) await this.setCollection(subjectId, 3, isPrivate);
 
     if ((await this.episodeCollection(episodeId))?.type === 2)
-      return { changed: false };
+      return { changed: changesSubject };
 
     await this.http.request(`users/-/collections/-/episodes/${episodeId}`, {
       method: "PUT",
@@ -141,7 +156,7 @@ export class BangumiClient {
   async markWatching(subjectId: number, isPrivate: boolean) {
     const current = await this.collection(subjectId);
 
-    if (current && [2, 3].includes(current.type)) return { changed: false };
+    if (current && ![1, 4].includes(current.type)) return { changed: false };
 
     await this.setCollection(subjectId, 3, isPrivate);
 

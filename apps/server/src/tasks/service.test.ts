@@ -674,6 +674,166 @@ test("Plex scan produces per-account tasks and persists success across runner re
   expect(await TaskService.runOne(restarted)).toBe(false);
 });
 
+test.each([false, true])(
+  "full rechecks preserve completed subjects and honor completion setting %s per account",
+  async (complete) => {
+    const base = await fixture();
+    const states = new Map([
+      ["first", 2],
+      ["second", 3],
+    ]);
+    const updates: { account: string; type: number }[] = [];
+    const runner = {
+      ...base.runner,
+      transport: (async (request) => {
+        const url = new URL(request.url);
+        const account =
+          request.headers.get("authorization") === "Bearer first"
+            ? "first"
+            : "second";
+        if (url.hostname !== "plex") {
+          if (request.method === "GET") {
+            if (url.pathname === `/v0/users/${account}/collections/10`)
+              return Response.json({
+                type: states.get(account),
+                ep_status: 12,
+              });
+            if (url.pathname === "/v0/users/-/collections/10")
+              return new Response(null, { status: 404 });
+            if (url.pathname === "/v0/users/-/collections/-/episodes/101")
+              return Response.json({ type: account === "first" ? 0 : 2 });
+            if (url.pathname === "/v0/subjects/10")
+              return Response.json({ id: 10, type: 2, eps: 12 });
+          }
+          if (
+            request.method === "POST" &&
+            url.pathname === "/v0/users/-/collections/10"
+          ) {
+            const { type } = (await request.json()) as { type: number };
+            states.set(account, type);
+            updates.push({ account, type });
+            return new Response(null, { status: 204 });
+          }
+        }
+        return base.transport(request);
+      }) satisfies HttpTransport,
+    };
+
+    // First record successful syncs with automatic completion disabled.
+    JobsService.enqueue(runner, {
+      kind: "plex-scan",
+      dedupeKey: "scan",
+      payload: {},
+    });
+    for (let i = 0; i < 3; i++) await TaskService.runOne(runner);
+    expect(base.database.orm.select().from(watched).all()).toHaveLength(2);
+    expect([...states.values()]).toEqual([2, 3]);
+    expect(updates).toEqual([]);
+
+    const settings = SettingsService.read(runner);
+    settings.sync.animeCompleted = complete;
+    SettingsService.save(runner, settings);
+    for (let pass = 0; pass < 2; pass++) {
+      const scan = JobsService.enqueue(runner, {
+        kind: "plex-scan",
+        dedupeKey: "scan",
+        payload: { full: true },
+      });
+      for (let i = 0; i < 3; i++) await TaskService.runOne(runner);
+      expect(JobsService.get(runner, scan.job.id)?.result).toMatchObject({
+        queued: 2,
+      });
+      expect([...states.values()]).toEqual([2, complete ? 2 : 3]);
+      expect(updates).toEqual(complete ? [{ account: "second", type: 2 }] : []);
+      expect(
+        JobsService.list(runner).every((job) => job.state === "succeeded"),
+      ).toBe(true);
+      const secondRecord = base.database.orm
+        .select()
+        .from(records)
+        .all()
+        .find((record) => record.accountId === base.second?.id);
+      expect(secondRecord?.message).toBe(
+        complete && pass === 0 ? "观看进度已同步" : "Bangumi 已有此进度",
+      );
+      // Both subjects already have watched progress; rechecking must not reset chapters.
+      expect(base.writes).toEqual([]);
+    }
+  },
+);
+
+test("completion retry preserves successful chapters and other accounts", async () => {
+  const base = await fixture();
+  const episodeWrites: string[] = [];
+  const completed = new Set<string>();
+  let failCompletion = true;
+  const runner = {
+    ...base.runner,
+    transport: (async (request) => {
+      const url = new URL(request.url);
+      if (url.hostname === "plex") return base.transport(request);
+      const account =
+        request.headers.get("authorization") === "Bearer first"
+          ? "first"
+          : "second";
+      if (request.method === "GET") {
+        if (url.pathname === `/v0/users/${account}/collections/10`)
+          return Response.json({
+            type: completed.has(account) ? 2 : 3,
+            ep_status: episodeWrites.includes(account) ? 1 : 0,
+          });
+        if (url.pathname === "/v0/users/-/collections/-/episodes/101")
+          return Response.json({
+            type: episodeWrites.includes(account) ? 2 : 0,
+          });
+        if (url.pathname === "/v0/subjects/10")
+          return Response.json({ id: 10, type: 2, eps: 1 });
+      }
+      if (request.method === "PUT") {
+        expect(url.pathname).toBe("/v0/users/-/collections/-/episodes/101");
+        expect(await request.json()).toEqual({ type: 2 });
+        episodeWrites.push(account);
+        return new Response(null, { status: 204 });
+      }
+      if (
+        request.method === "POST" &&
+        url.pathname === "/v0/users/-/collections/10"
+      ) {
+        expect(await request.json()).toEqual({ type: 2, private: false });
+        if (account === "first" && failCompletion)
+          return new Response(null, { status: 503 });
+        completed.add(account);
+        return new Response(null, { status: 204 });
+      }
+      return base.transport(request);
+    }) satisfies HttpTransport,
+  };
+  const settings = SettingsService.read(runner);
+  settings.sync.animeCompleted = true;
+  SettingsService.save(runner, settings);
+  JobsService.enqueue(runner, {
+    kind: "plex-scan",
+    dedupeKey: "scan",
+    payload: { full: true },
+  });
+  for (let i = 0; i < 3; i++) await TaskService.runOne(runner);
+  expect(episodeWrites.sort()).toEqual(["first", "second"]);
+  expect([...completed]).toEqual(["second"]);
+  expect(
+    JobsService.list(runner).filter((job) => job.state === "pending"),
+  ).toHaveLength(1);
+  failCompletion = false;
+  base.database.sqlite.exec(
+    "UPDATE jobs SET available_at=0 WHERE state='pending'",
+  );
+  await TaskService.runOne(runner);
+  expect(episodeWrites.sort()).toEqual(["first", "second"]);
+  expect([...completed].sort()).toEqual(["first", "second"]);
+  expect(
+    JobsService.list(runner).every((job) => job.state === "succeeded"),
+  ).toBe(true);
+});
+
 test("matched targets survive a database reopen and replay without search", async () => {
   const { runner, database, vault, writes, fail, disableSearch, transport } =
     await fixture();

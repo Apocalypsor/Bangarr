@@ -39,6 +39,7 @@ export abstract class AccountService {
       SettingsService.read(context).bangumi.apiUrl,
       context.vault.open(account.accessToken),
       context.transport ?? fetch,
+      account.username,
     );
   }
 
