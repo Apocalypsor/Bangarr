@@ -9,6 +9,7 @@ import { CatalogStore, createCatalog, insertSubject } from "@server/db/catalog";
 import { accounts, candidates, jobs } from "@server/db/schema";
 import { JobsService } from "@server/modules/jobs/service";
 import { NeedsConfirmation } from "@server/modules/matching/errors";
+import mushokuSeasonTwo from "@server/modules/matching/fixtures/mushoku-season-two.json";
 import { MatchingService } from "@server/modules/matching/service";
 import { defaultSettings } from "@server/modules/settings/model";
 import { SettingsService } from "@server/modules/settings/service";
@@ -200,13 +201,13 @@ const fixture = (
   return { resolve, calls, context, api };
 };
 
-test("episode zero resolves within the requested season without shifting episode one", async () => {
+test("episode zero remains pending and positive local numbering follows Bangumi ep", async () => {
   const { resolve } = fixture([
     { id: 1, name: "番剧", start: 0, count: 3 },
     { id: 2, name: "番剧 第二季", start: 0, count: 3 },
   ]);
-  expect(await resolve(2, 0)).toEqual({ subjectId: 2, episodeId: 2001 });
-  expect(await resolve(2, 1)).toEqual({ subjectId: 2, episodeId: 2002 });
+  await expect(resolve(2, 0)).rejects.toBeInstanceOf(NeedsConfirmation);
+  expect(await resolve(2, 1)).toEqual({ subjectId: 2, episodeId: 2001 });
   await expect(resolve(3, 0)).rejects.toBeInstanceOf(NeedsConfirmation);
 });
 
@@ -245,10 +246,12 @@ test("manual mappings accept zero, preserve offsets and reject negative effectiv
     const result = MatchingService.match(context, item, api, defaultSettings);
     if (offset < 0)
       await expect(result).rejects.toMatchObject({ code: "EPISODE_RANGE" });
+    else if (offset === 0)
+      await expect(result).rejects.toBeInstanceOf(NeedsConfirmation);
     else
       expect(await result).toMatchObject({
         subjectId: 2,
-        episodeId: 2001 + offset,
+        episodeId: 2001,
         mapped: true,
       });
   }
@@ -556,7 +559,260 @@ const seedCandidate = (
     .run();
 };
 
-test("a manually confirmed subject overrides conflicting dates and stays pinned to its episode numbering", async () => {
+test.each([373247, 444557])(
+  "Mushoku Tensei S2 resolves both cours from mapping entry %s",
+  async (entryId) => {
+    const context = testContext();
+    disposables.push(context.dispose);
+    // Public API snapshot: part 1 includes E00 in eps=13; part 2 uses sort 13–24.
+    const api = new BangumiClient(
+      "https://bangumi.test",
+      "",
+      async (request) => {
+        expect(request.method).toBe("GET");
+        const url = new URL(request.url);
+        const id = Number(
+          url.searchParams.get("subject_id") ?? url.pathname.split("/")[3],
+        );
+        const segment = mushokuSeasonTwo.find((row) => row.subject.id === id);
+        if (!segment) throw new Error(`Unexpected subject ${id}`);
+        if (url.pathname === "/v0/episodes") {
+          expect(url.searchParams.get("type")).toBe("0");
+          return Response.json({
+            data: segment.episodes,
+            total: segment.episodes.length,
+          });
+        }
+        if (url.pathname.endsWith("/subjects"))
+          return Response.json(
+            id === 373247
+              ? [{ id: 444557, relation: "续集" }]
+              : [{ id: 373247, relation: "前传" }],
+          );
+        return Response.json(segment.subject);
+      },
+    );
+    const item: PlexItem = {
+      ratingKey: "mushoku",
+      title: "无职转生～到了异世界就拿出真本事～",
+      originalTitle: "",
+      season: 2,
+      episode: 1,
+      mediaType: "episode",
+      releaseDate: "",
+      viewCount: 1,
+      lastViewedAt: null,
+    };
+    MatchingService.save(context, {
+      title: item.title,
+      season: 2,
+      subjectId: entryId,
+      episodeOffset: 0,
+    });
+    for (const expected of mushokuSeasonTwo
+      .flatMap((row) => row.episodes)
+      .filter((row) => row.sort > 0)) {
+      const result = await MatchingService.match(
+        context,
+        { ...item, episode: expected.sort, releaseDate: expected.airdate },
+        api,
+        defaultSettings,
+      );
+      expect(result).toMatchObject({
+        subjectId: expected.subject_id,
+        episodeId: expected.id,
+        mapped: true,
+      });
+      const automatic = await MatchingService.resolveEpisode(
+        context,
+        { ...item, episode: expected.sort, releaseDate: expected.airdate },
+        api,
+        entryId,
+        false,
+        [],
+      );
+      expect(automatic).toEqual({
+        subjectId: expected.subject_id,
+        episodeId: expected.id,
+      });
+    }
+    // Reference _resolve_by_season_chain counts all type=0 chapters, including sort 0.
+    // With no date, S2E17 is local ep 4 in the second subject (sort 16).
+    expect(
+      await MatchingService.match(
+        context,
+        { ...item, episode: 17 },
+        api,
+        defaultSettings,
+      ),
+    ).toMatchObject({ subjectId: 444557, episodeId: 1233197 });
+    await expect(
+      MatchingService.match(
+        context,
+        { ...item, episode: 0 },
+        api,
+        defaultSettings,
+      ),
+    ).rejects.toBeInstanceOf(NeedsConfirmation);
+    await expect(
+      MatchingService.match(
+        context,
+        { ...item, episode: 26 },
+        api,
+        defaultSettings,
+      ),
+    ).rejects.toBeInstanceOf(NeedsConfirmation);
+  },
+);
+
+test.each([
+  [7, 5],
+  [13, 17],
+  [24, 8],
+])(
+  "cour boundaries come from chapter data (%s chapters followed by %s)",
+  async (firstCount, secondCount) => {
+    const { context, api } = fixture([
+      { id: 1, name: "番剧 第二季", count: firstCount },
+      { id: 2, name: "番剧 第二季 第2部分", count: secondCount },
+    ]);
+    const item: PlexItem = {
+      ratingKey: "cour",
+      title: "番剧",
+      originalTitle: "",
+      season: 2,
+      episode: firstCount + 1,
+      mediaType: "episode",
+      releaseDate: "",
+      viewCount: 1,
+      lastViewedAt: null,
+    };
+    MatchingService.save(context, {
+      title: item.title,
+      season: 2,
+      subjectId: 1,
+      episodeOffset: 0,
+    });
+    expect(
+      await MatchingService.match(context, item, api, defaultSettings),
+    ).toMatchObject({ subjectId: 2, episodeId: 2001 });
+    expect(
+      await MatchingService.match(
+        context,
+        { ...item, episode: firstCount },
+        api,
+        defaultSettings,
+      ),
+    ).toMatchObject({ subjectId: 1, episodeId: 1000 + firstCount });
+    expect(
+      await MatchingService.match(
+        context,
+        { ...item, episode: firstCount + secondCount },
+        api,
+        defaultSettings,
+      ),
+    ).toMatchObject({ subjectId: 2, episodeId: 2000 + secondCount });
+  },
+);
+
+test("explicit special-episode offsets still resolve the selected chapter", async () => {
+  const context = testContext();
+  disposables.push(context.dispose);
+  const api = new BangumiClient("https://bangumi.test", "", async (request) => {
+    const url = new URL(request.url);
+    expect(url.pathname).toBe("/v0/episodes");
+    expect(url.searchParams.get("type")).toBe("1");
+    return Response.json({
+      data: [
+        {
+          id: 1066854,
+          subject_id: 325585,
+          type: 1,
+          sort: 24,
+          ep: 0,
+          name: "",
+          name_cn: "",
+        },
+      ],
+      total: 1,
+    });
+  });
+  MatchingService.save(context, {
+    title: "无职转生",
+    season: 0,
+    subjectId: 325585,
+    episodeOffset: 23,
+  });
+  expect(
+    await MatchingService.match(
+      context,
+      {
+        ratingKey: "sp",
+        title: "无职转生",
+        originalTitle: "",
+        season: 0,
+        episode: 1,
+        mediaType: "episode",
+        releaseDate: "",
+        viewCount: 1,
+        lastViewedAt: null,
+      },
+      api,
+      defaultSettings,
+    ),
+  ).toMatchObject({ subjectId: 325585, episodeId: 1066854 });
+});
+
+test("manual mappings fall back across reset-numbered cours and keep ambiguous branches pending", async () => {
+  const segments = [
+    { id: 1, name: "番剧 第二季" },
+    { id: 2, name: "番剧 第二季 第2部分" },
+  ];
+  const { context, api } = fixture(segments);
+  const item: PlexItem = {
+    ratingKey: "cour",
+    title: "番剧",
+    originalTitle: "",
+    season: 2,
+    episode: 13,
+    mediaType: "episode",
+    releaseDate: "",
+    viewCount: 1,
+    lastViewedAt: null,
+  };
+  MatchingService.save(context, {
+    title: item.title,
+    season: 2,
+    subjectId: 1,
+    episodeOffset: 0,
+  });
+  expect(
+    await MatchingService.match(context, item, api, defaultSettings),
+  ).toMatchObject({ subjectId: 2, episodeId: 2001, mapped: true });
+  const branching = fixture(
+    [...segments, { id: 3, name: "番剧 第二季 第2部分" }],
+    [
+      [1, 2],
+      [1, 3],
+    ],
+  );
+  MatchingService.save(branching.context, {
+    title: item.title,
+    season: 2,
+    subjectId: 1,
+    episodeOffset: 0,
+  });
+  await expect(
+    MatchingService.match(
+      branching.context,
+      item,
+      branching.api,
+      defaultSettings,
+    ),
+  ).rejects.toBeInstanceOf(NeedsConfirmation);
+});
+
+test("a manually confirmed subject overrides conflicting dates and falls back when its chapter is absent", async () => {
   const context = testContext();
   disposables.push(context.dispose);
   const calls: string[] = [];
@@ -637,8 +893,8 @@ test("a manually confirmed subject overrides conflicting dates and stays pinned 
       api,
       structuredClone(defaultSettings),
     ),
-  ).rejects.toMatchObject({ code: "MAPPED_EPISODE_MISSING" });
-  expect(calls.every((path) => path === "/v0/episodes")).toBe(true);
+  ).rejects.toBeInstanceOf(NeedsConfirmation);
+  expect(calls).toContain("/v0/subjects/443831/subjects");
 
   MatchingService.save(context, {
     title: item.title,

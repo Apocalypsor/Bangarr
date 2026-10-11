@@ -14,8 +14,6 @@ export const findEpisode = (
   seasonMatched: boolean,
   releaseDate: string,
 ) => {
-  if (target === 0) return findLocalEpisode(episodes, target);
-
   if (episodes.length >= 100 && releaseDate) {
     const dated = episodes.filter((ep) => ep.airdate === releaseDate);
 

@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { join } from "node:path";
 import { openDatabase } from "@server/db/client";
+import { jobs } from "@server/db/schema";
 import { JobsService } from "@server/modules/jobs/service";
 import { testContext } from "@server/utils/testing";
 
@@ -332,4 +333,103 @@ test("active task pages exclude finished history before pagination and separate 
     JobsService.page(queue, { state: "active" }).items.map((job) => job.id),
   ).toEqual([retry.job.id]);
   expect(JobsService.get(queue, failed.id)?.state).toBe("failed");
+});
+
+test("failed task counts follow retries and later scans without deleting history", () => {
+  const { queue } = fixture();
+  const original = JobsService.enqueue(queue, {
+    kind: "plex-scan",
+    dedupeKey: "scan:one",
+    payload: {},
+  }).job;
+  JobsService.claim(queue, "worker");
+  JobsService.fail(queue, original.id, "worker", "failed", false);
+  expect(JobsService.page(queue, { state: "failed" })).toMatchObject({
+    total: 1,
+    counts: { failed: 1 },
+  });
+
+  const retry = JobsService.retry(queue, original.id).job;
+  expect(JobsService.page(queue, { state: "failed" })).toMatchObject({
+    total: 0,
+    counts: { failed: 0, waiting: 1 },
+  });
+  expect(JobsService.claim(queue, "worker")?.id).toBe(retry.id);
+  JobsService.complete(queue, retry.id, "worker");
+  expect(JobsService.page(queue)).toMatchObject({
+    total: 1,
+    counts: { failed: 0, succeeded: 1 },
+  });
+  expect(JobsService.get(queue, original.id)?.state).toBe("failed");
+  expect(JobsService.list(queue)).toHaveLength(2);
+
+  const nextScan = JobsService.enqueue(queue, {
+    kind: "plex-scan",
+    dedupeKey: "scan:one",
+    payload: {},
+  }).job;
+  JobsService.claim(queue, "worker");
+  JobsService.fail(queue, nextScan.id, "worker", "failed again", false);
+  expect(JobsService.page(queue, { state: "failed" })).toMatchObject({
+    total: 1,
+    counts: { failed: 1, succeeded: 0 },
+  });
+  expect(JobsService.page(queue, { state: "failed" }).items[0]?.id).toBe(
+    nextScan.id,
+  );
+  expect(JobsService.list(queue)).toHaveLength(3);
+});
+
+test("latest-task filtering precedes pagination and uses insertion order when timestamps tie", () => {
+  const { queue, directory } = fixture();
+  for (const [id, key, state] of [
+    ...Array.from(
+      { length: 35 },
+      (_, index) =>
+        [`z-history-${index}`, "same-account-episode", "failed"] as const,
+    ),
+    ["a-current", "same-account-episode", "succeeded"],
+    ["other-account", "other-account-episode", "failed"],
+    ["other-library", "other-library-scan", "failed"],
+  ] as const) {
+    queue.database.orm
+      .insert(jobs)
+      .values({
+        id,
+        dedupeKey: key,
+        kind: key.endsWith("scan") ? "plex-scan" : "sync",
+        state,
+        payload: {},
+        createdAt: 10000,
+        updatedAt: 10000,
+        availableAt: 10000,
+      })
+      .run();
+  }
+  const reopened = openDatabase(join(directory, "test.sqlite"));
+  try {
+    const context = { database: reopened };
+    const first = JobsService.page(context, { state: "failed", limit: 1 });
+    const second = JobsService.page(context, {
+      state: "failed",
+      limit: 1,
+      offset: 1,
+    });
+    expect(first).toMatchObject({
+      total: 2,
+      counts: { failed: 2, succeeded: 1 },
+    });
+    expect(new Set([first.items[0]?.id, second.items[0]?.id])).toEqual(
+      new Set(["other-account", "other-library"]),
+    );
+    expect(
+      JobsService.page(context, { state: "failed", kind: "sync" }).total,
+    ).toBe(1);
+    expect(
+      JobsService.page(context, { state: "failed", offset: 2 }).items,
+    ).toEqual([]);
+    expect(JobsService.list(context)).toHaveLength(38);
+  } finally {
+    reopened.close();
+  }
 });

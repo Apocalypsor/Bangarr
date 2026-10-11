@@ -77,22 +77,13 @@ export const findCumulativeEpisode = (
   segments: EpisodeSegment[],
   target: number,
 ) => {
+  if (target === 0) return undefined;
+
   let preceding = 0;
 
   for (const segment of segments) {
-    if (target === 0) {
-      const episode = findLocalEpisode(
-        segment.episodes.filter((ep) => ep.type === 0),
-        0,
-      );
-
-      return episode
-        ? { subjectId: segment.subject.id, episodeId: episode.id }
-        : undefined;
-    }
-
     const normal = segment.episodes.filter(
-      (ep) => ep.type === 0 && Number.isInteger(ep.sort) && ep.sort > 0,
+      (ep) => ep.type === 0 && Number.isInteger(ep.sort),
     );
 
     const first = Math.min(...normal.map((ep) => ep.sort));
@@ -126,20 +117,13 @@ const isContinuationTitle = (title: string) =>
     title.normalize("NFKC"),
   );
 
-/** Bangumi sort may start at 76 while the local episode number starts at 1. */
+/** Reference _match_target_ep_rows: ep = sort - first normal sort + 1, then sort/ep. */
 export const findLocalEpisode = (
   episodes: BangumiEpisode[],
   target: number,
 ) => {
-  // Bangumi ep=0 can mean unspecified; only sort=0 identifies episode zero.
-  if (target === 0) {
-    const zero = episodes.filter((ep) => ep.sort === 0);
-
-    return zero.length === 1 ? zero[0] : undefined;
-  }
-
   const normal = episodes.filter(
-    (ep) => ep.type === 0 && Number.isFinite(ep.sort) && ep.sort > 0,
+    (ep) => ep.type === 0 && Number.isFinite(ep.sort),
   );
   const first = normal.length ? Math.min(...normal.map((ep) => ep.sort)) : null;
 

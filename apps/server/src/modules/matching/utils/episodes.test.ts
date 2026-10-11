@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
 import type { BangumiEpisode } from "@server/clients/bangumi/types";
-import { findEpisode } from "@server/modules/matching/utils/candidates";
 import {
   findCumulativeEpisode,
   findLocalEpisode,
@@ -22,43 +21,55 @@ const episode = (
   type,
 });
 
-test("episode zero matches only an explicit unique sort zero and does not shift later episodes", () => {
-  const episodes = [episode(10, 0, 0), episode(11, 1, 0), episode(12, 2, 0)];
-  expect(findLocalEpisode(episodes, 0)?.id).toBe(10);
-  expect(findLocalEpisode(episodes, 1)?.id).toBe(11);
-  expect(findLocalEpisode(episodes, 2)?.id).toBe(12);
-  expect(findLocalEpisode([episode(11, 1, 0)], 0)).toBeUndefined();
-  expect(findLocalEpisode([episode(10, 0), episode(20, 0)], 0)).toBeUndefined();
-  expect(findLocalEpisode([episode(10, 0), episode(11, 13)], 1)?.id).toBe(11);
-  const longSeries = Array.from({ length: 100 }, (_, i) => ({
-    ...episode(i + 1, i + 1, 0),
-    airdate: i === 0 ? "2026-01-01" : "",
-  }));
-  expect(findEpisode(longSeries, 0, true, "2026-01-01")).toBeUndefined();
+test("local numbering follows the reference sort minus first normal sort plus one", () => {
+  const episodes = [episode(10, 0, 1), episode(11, 1, 2), episode(12, 2, 3)];
+  expect(findLocalEpisode(episodes, 1)?.id).toBe(10);
+  expect(findLocalEpisode(episodes, 2)?.id).toBe(11);
+  expect(findLocalEpisode(episodes, 3)?.id).toBe(12);
+  expect(findLocalEpisode([episode(1, 76, 1), episode(2, 77, 2)], 2)?.id).toBe(
+    2,
+  );
 });
 
-test("a cour prologue does not shift cumulative episode counts", () => {
-  const segments = [
-    {
-      subject: { id: 1, name: "番剧", name_cn: "", type: 2, eps: 2 },
-      episodes: [episode(10, 0), episode(11, 1), episode(12, 2)],
+test("same-season fallback counts actual normal chapters including a prologue", () => {
+  const first = {
+    subject: { id: 1, name: "番剧 第二季", name_cn: "", type: 2, eps: 13 },
+    episodes: Array.from({ length: 13 }, (_, i) => episode(100 + i, i, i + 1)),
+  };
+  const second = {
+    subject: {
+      id: 2,
+      name: "番剧 第二季 第2部分",
+      name_cn: "",
+      type: 2,
+      eps: 12,
     },
-    {
-      subject: { id: 2, name: "番剧 Part 2", name_cn: "", type: 2, eps: 2 },
-      episodes: [episode(20, 0), episode(21, 1), episode(22, 2)],
-    },
-  ];
-  expect(findCumulativeEpisode(segments, 0)).toEqual({
+    episodes: Array.from({ length: 12 }, (_, i) =>
+      episode(200 + i, 13 + i, i + 1),
+    ),
+  };
+  expect(findCumulativeEpisode([first, second], 0)).toBeUndefined();
+  expect(findCumulativeEpisode([first, second], 13)).toEqual({
     subjectId: 1,
-    episodeId: 10,
+    episodeId: 112,
   });
-  expect(findCumulativeEpisode(segments, 1)).toEqual({
-    subjectId: 1,
-    episodeId: 11,
-  });
-  expect(findCumulativeEpisode(segments, 3)).toEqual({
+  expect(findCumulativeEpisode([first, second], 14)).toEqual({
     subjectId: 2,
-    episodeId: 21,
+    episodeId: 200,
+  });
+  expect(findCumulativeEpisode([first, second], 17)).toEqual({
+    subjectId: 2,
+    episodeId: 203,
+  });
+  expect(findCumulativeEpisode([first, second], 25)).toEqual({
+    subjectId: 2,
+    episodeId: 211,
+  });
+  first.episodes = first.episodes.filter((row) => row.sort !== 12);
+  expect(findCumulativeEpisode([first, second], 13)).toBeUndefined();
+  expect(findCumulativeEpisode([first, second], 14)).toEqual({
+    subjectId: 2,
+    episodeId: 200,
   });
 });
 
@@ -71,7 +82,7 @@ test("a merged season starting at zero stays in that season", () => {
     episode(5, 2),
   ];
   expect(findMergedSeasonEpisode(episodes, 2, 0)?.id).toBe(3);
-  expect(findMergedSeasonEpisode(episodes, 2, 1)?.id).toBe(4);
+  expect(findMergedSeasonEpisode(episodes, 2, 1)?.id).toBe(3);
   expect(findMergedSeasonEpisode(episodes, 3, 0)).toBeUndefined();
 });
 

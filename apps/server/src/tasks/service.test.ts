@@ -3,6 +3,7 @@ import { openDatabase } from "@server/db/client";
 import { candidates, records, watched } from "@server/db/schema";
 import { AccountService } from "@server/modules/accounts/service";
 import { JobsService } from "@server/modules/jobs/service";
+import mushokuSeasonTwo from "@server/modules/matching/fixtures/mushoku-season-two.json";
 import { MatchingService } from "@server/modules/matching/service";
 import { defaultSettings } from "@server/modules/settings/model";
 import { SettingsService } from "@server/modules/settings/service";
@@ -467,6 +468,8 @@ test.each([true, false])(
                 grandparentTitle: "番剧",
                 parentIndex: 2,
                 index,
+                originallyAvailableAt:
+                  index === 0 ? "2026-01-01" : "2026-01-08",
                 viewCount: 1,
               })),
             },
@@ -481,9 +484,20 @@ test.each([true, false])(
             sort,
             ep: 0,
             type: 0,
+            airdate: sort === 0 ? "2026-01-01" : "2026-01-08",
           }));
           return Response.json({ data, total: data.length });
         }
+        if (url.pathname === "/v0/subjects/10")
+          return Response.json({
+            id: 10,
+            name: "番剧 第二季",
+            name_cn: "",
+            type: 2,
+            platform: "TV",
+          });
+        if (url.pathname === "/v0/subjects/10/subjects")
+          return Response.json([]);
         return base.transport(request);
       },
     };
@@ -512,7 +526,7 @@ test.each([true, false])(
     expect(rows).toHaveLength(4);
     expect(
       rows.filter((row) => row.episode === 0).map((row) => row.status),
-    ).toEqual([hasZero ? "success" : "error", hasZero ? "success" : "error"]);
+    ).toEqual(["pending", "pending"]);
     expect(
       rows.filter((row) => row.episode === 1).map((row) => row.status),
     ).toEqual(["success", "success"]);
@@ -521,9 +535,98 @@ test.each([true, false])(
     ).toHaveLength(2);
     expect(
       base.writes.filter((write) => write.path.endsWith("/episodes/100")),
-    ).toHaveLength(hasZero ? 2 : 0);
+    ).toHaveLength(0);
   },
 );
+
+test("failed second-cour tasks retry through the mapped entry and synchronize the resolved subject for every account", async () => {
+  const base = await fixture();
+  const expected =
+    mushokuSeasonTwo[1]?.episodes.filter(
+      (row) => row.sort >= 17 && row.sort <= 21,
+    ) ?? [];
+  expect(expected).toHaveLength(5);
+  const runner = {
+    ...base.runner,
+    transport: async (request: Request) => {
+      const url = new URL(request.url);
+      if (url.hostname === "plex" && url.pathname.endsWith("/all"))
+        return scanResponse(
+          expected.map((ep) => ({
+            ...scanItem(String(ep.sort)),
+            parentIndex: 2,
+            index: ep.sort,
+            originallyAvailableAt: ep.airdate,
+          })),
+        );
+      if (url.pathname === "/v0/episodes") {
+        const segment = mushokuSeasonTwo.find(
+          (row) =>
+            row.subject.id === Number(url.searchParams.get("subject_id")),
+        );
+        if (!segment) throw new Error("Unexpected subject");
+        return Response.json({
+          data: segment.episodes,
+          total: segment.episodes.length,
+        });
+      }
+      if (url.pathname.startsWith("/v0/subjects/")) {
+        const id = Number(url.pathname.split("/")[3]);
+        const segment = mushokuSeasonTwo.find((row) => row.subject.id === id);
+        if (!segment) throw new Error("Unexpected subject");
+        if (url.pathname.endsWith("/subjects"))
+          return Response.json(
+            id === 373247
+              ? [{ id: 444557, relation: "续集" }]
+              : [{ id: 373247, relation: "前传" }],
+          );
+        return Response.json(segment.subject);
+      }
+      return base.transport(request);
+    },
+  };
+  MatchingService.save(runner, {
+    title: "番剧",
+    season: 2,
+    subjectId: 373247,
+    episodeOffset: 0,
+  });
+  JobsService.enqueue(runner, {
+    kind: "plex-scan",
+    dedupeKey: "scan",
+    payload: {},
+  });
+  await TaskService.runOne(runner);
+  const tasks = JobsService.list(runner).filter((job) => job.kind === "sync");
+  expect(tasks).toHaveLength(10);
+  // Exercise the same retry path used for previously failed records.
+  for (let i = 0; i < tasks.length; i++) {
+    const leased = JobsService.claim(runner, "previous-version");
+    expect(leased?.kind).toBe("sync");
+    if (!leased) throw new Error("Missing task");
+    JobsService.fail(
+      runner,
+      leased.id,
+      "previous-version",
+      "章节未找到",
+      false,
+    );
+  }
+  for (const task of tasks) JobsService.retry(runner, task.id);
+  for (let i = 0; i < tasks.length; i++) await TaskService.runOne(runner);
+  const rows = base.database.orm.select().from(watched).all();
+  expect(rows).toHaveLength(10);
+  expect(rows.every((row) => row.subjectId === 444557)).toBe(true);
+  for (const ep of expected)
+    expect(rows.filter((row) => row.episodeId === ep.id)).toHaveLength(2);
+  expect(
+    base.database.orm
+      .select()
+      .from(records)
+      .all()
+      .every((row) => row.status === "success"),
+  ).toBe(true);
+});
 
 test("Plex scan produces per-account tasks and persists success across runner restarts", async () => {
   const { runner, database, vault, writes } = await fixture();

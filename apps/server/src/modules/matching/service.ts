@@ -96,7 +96,10 @@ export abstract class MatchingService {
         { ...item, episode: item.episode + mapping.episodeOffset },
         api,
         mapping.subjectId,
-        !mapping.resolveSeries,
+        // As in Bangumi-syncer's custom mapping step, a later-season ID is
+        // an entry into the relation chain, not a promise that it owns every ep.
+        !mapping.resolveSeries &&
+          (item.season <= 1 || mapping.episodeOffset !== 0),
         trace,
         !mapping.resolveSeries,
       );
@@ -313,7 +316,7 @@ export abstract class MatchingService {
     subjectId: number,
     seasonMatched: boolean,
     trace: Record<string, unknown>[],
-    pinnedSubject = false,
+    manualSubject = false,
   ): Promise<{
     subjectId: number;
     episodeId: number;
@@ -327,7 +330,7 @@ export abstract class MatchingService {
     if (item.mediaType === "movie") {
       const episode = [...episodes].sort((a, b) => a.sort - b.sort)[0];
 
-      if (!episode && pinnedSubject)
+      if (!episode && manualSubject)
         throw new AppError(
           409,
           "MAPPED_EPISODE_MISSING",
@@ -343,23 +346,42 @@ export abstract class MatchingService {
       return { subjectId, episodeId: episode.id };
     }
 
-    if (pinnedSubject) {
+    // The reference resolver does not treat E00 as a positive local episode.
+    // Keep it pending rather than substituting another chapter.
+    if (item.episode === 0) {
+      const subject = await api.subject(subjectId);
+      throw new NeedsConfirmation(
+        [
+          {
+            id: subject.id,
+            name: subject.name,
+            nameCn: subject.name_cn,
+            date: subject.date ?? "",
+            score: 0,
+            source: "episode",
+          },
+        ],
+        [
+          ...trace,
+          { step: "episode", reason: "第 0 集需要确认对应条目与集数偏移" },
+        ],
+      );
+    }
+
+    if (manualSubject && seasonMatched) {
       const episode = findLocalEpisode(episodes, item.episode);
 
-      if (!episode)
-        throw new AppError(
-          409,
-          "MAPPED_EPISODE_MISSING",
-          `Bangumi 条目 ${subjectId} 中找不到${item.season === 0 ? "特别篇第" : "第"} ${item.episode} 集，请检查条目或集数偏移`,
-        );
+      if (episode) {
+        trace.push({
+          step: "episode",
+          method: "manual",
+          subjectId,
+          episodeId: episode.id,
+        });
+        return { subjectId, episodeId: episode.id };
+      }
 
-      trace.push({
-        step: "episode",
-        method: "manual",
-        subjectId,
-        episodeId: episode.id,
-      });
-      return { subjectId, episodeId: episode.id };
+      trace.push({ step: "episode", method: "mapped-subject-miss", subjectId });
     }
 
     if (!seasonMatched && item.season > 1) {

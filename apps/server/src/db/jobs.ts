@@ -159,7 +159,13 @@ export const listJobs = (
     .all();
 
 export const listTaskPage = (database: AppDatabase, filter: JobsQuery) => {
+  // A retry creates a new row. Keep history in jobs, but display only the
+  // latest attempt per logical task. Rowid also orders same-millisecond inserts.
+  const latest = sql`${jobs}.rowid in (
+    select max(rowid) from ${jobs} group by ${jobs.dedupeKey}
+  )`;
   const where = and(
+    latest,
     filter.state === "active"
       ? inArray(jobs.state, ["pending", "running"])
       : filter.state === "waiting"
@@ -250,6 +256,7 @@ export const listTaskPage = (database: AppDatabase, filter: JobsQuery) => {
           retrying: sql<number>`sum(case when ${jobs.attempt} > 0 then 1 else 0 end)`,
         })
         .from(jobs)
+        .where(latest)
         .groupBy(jobs.state)
         .all(),
       limit,
