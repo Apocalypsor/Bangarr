@@ -2,8 +2,10 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { openDatabase } from "@server/db/client";
 import { mappings } from "@server/db/schema";
+import { readMigrationFiles } from "drizzle-orm/migrator";
 
 test("fresh schema persists mappings and enforces unique title and season", () => {
   const directory = mkdtempSync(join(tmpdir(), "bangarr-schema-"));
@@ -63,7 +65,7 @@ test("opening an existing database adds query indexes without changing its rows"
   try {
     const db = openDatabase(path);
     db.sqlite.exec(
-      "DROP INDEX jobs_dedupe_key; DROP INDEX candidates_job_state; DROP INDEX candidates_state;",
+      "DROP TABLE __drizzle_migrations; DROP INDEX jobs_dedupe_key; DROP INDEX candidates_job_state; DROP INDEX candidates_state;",
     );
     db.sqlite
       .query(
@@ -91,6 +93,52 @@ test("opening an existing database adds query indexes without changing its rows"
       expect(JSON.stringify(candidates)).toContain("candidates_job_state");
     } finally {
       reopened.close();
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("Drizzle records each migration once and does not rerun applied SQL", () => {
+  const directory = mkdtempSync(join(tmpdir(), "bangarr-migrations-"));
+  const path = join(directory, "database.sqlite");
+  const migrations = readMigrationFiles({
+    migrationsFolder: fileURLToPath(
+      new URL("../../migrations", import.meta.url),
+    ),
+  });
+  const expected = migrations.map((migration) => ({
+    hash: migration.hash,
+    created_at: migration.folderMillis,
+  }));
+  try {
+    const first = openDatabase(path);
+    expect(
+      first.sqlite
+        .query(
+          "SELECT hash, created_at FROM __drizzle_migrations ORDER BY created_at",
+        )
+        .all(),
+    ).toEqual(expected);
+    // Applied migrations must not become perpetual repair routines on startup.
+    first.sqlite.exec("DROP INDEX candidates_state");
+    first.close();
+    const second = openDatabase(path);
+    try {
+      expect(
+        second.sqlite
+          .query(
+            "SELECT hash, created_at FROM __drizzle_migrations ORDER BY created_at",
+          )
+          .all(),
+      ).toEqual(expected);
+      expect(
+        second.sqlite
+          .query("SELECT name FROM sqlite_master WHERE name='candidates_state'")
+          .all(),
+      ).toEqual([]);
+    } finally {
+      second.close();
     }
   } finally {
     rmSync(directory, { recursive: true, force: true });

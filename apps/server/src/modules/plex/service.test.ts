@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { createApp } from "@server/app";
-import { migratePlexSettings, readPlexAccounts } from "@server/db/plex";
+import { openDatabase } from "@server/db/client";
+import { readPlexAccounts } from "@server/db/plex";
 import { accounts } from "@server/db/schema";
 import { AccountService } from "@server/modules/accounts/service";
 import { JobsService } from "@server/modules/jobs/service";
@@ -166,7 +167,10 @@ test("existing single-Plex credentials and bindings survive edits and deleting a
       createdAt: 0,
     })
     .run();
-  migratePlexSettings(context.database);
+  context.database.sqlite.exec("DROP TABLE __drizzle_migrations");
+  const upgraded = openDatabase(context.database.path);
+  disposables.unshift(upgraded.close);
+  context.database = upgraded;
   expect(PlexService.get(context, "default").token).toBe("token-legacy.test");
   expect(AccountService.list(context)[0]?.plexUsers).toEqual(["default"]);
   await PlexService.save(

@@ -1,15 +1,15 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { migratePlexSettings } from "@server/db/plex";
+import { fileURLToPath } from "node:url";
 import * as schema from "@server/db/schema";
 import { drizzle } from "drizzle-orm/bun-sqlite";
+import { migrate } from "drizzle-orm/bun-sqlite/migrator";
 
 export type AppDatabase = ReturnType<typeof openDatabase>;
 
-const initialSchema = readFileSync(
-  new URL("./schema.sql", import.meta.url),
-  "utf8",
+const migrationsFolder = fileURLToPath(
+  new URL("../../migrations", import.meta.url),
 );
 
 export const openDatabase = (path: string) => {
@@ -25,45 +25,12 @@ export const openDatabase = (path: string) => {
       PRAGMA journal_mode = WAL;
       PRAGMA foreign_keys = ON;
     `);
-    sqlite
-      .transaction(() => {
-        const initialized = sqlite
-          .query(`
-            SELECT 1 FROM sqlite_master
-            WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
-            LIMIT 1
-          `)
-          .get();
-
-        if (!initialized) sqlite.exec(initialSchema);
-        else {
-          // Add missing indexes to existing installations using the generated
-          // schema as the sole definition. Never recreate tables or user data.
-          for (const [statement] of initialSchema.matchAll(
-            /CREATE (?:UNIQUE )?INDEX [^;]+;/g,
-          ))
-            sqlite.exec(statement.replace("INDEX ", "INDEX IF NOT EXISTS "));
-        }
-      })
-      .immediate();
+    const orm = drizzle(sqlite, { schema });
+    migrate(orm, { migrationsFolder });
+    return { path, sqlite, orm, close: () => sqlite.close() };
   } catch (error) {
     sqlite.close();
 
-    throw error;
-  }
-
-  const database = {
-    path,
-    sqlite,
-    orm: drizzle(sqlite, { schema }),
-    close: () => sqlite.close(),
-  };
-
-  try {
-    migratePlexSettings(database);
-    return database;
-  } catch (error) {
-    sqlite.close();
     throw error;
   }
 };

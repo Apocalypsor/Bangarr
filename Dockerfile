@@ -42,6 +42,7 @@ RUN apk add --no-cache nginx s6 \
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY --from=build /app/apps/page/dist ./public
 COPY apps/server/src ./apps/server/src
+COPY apps/server/migrations ./apps/server/migrations
 COPY apps/server/package.json apps/server/tsconfig.json ./apps/server/
 COPY package.json tsconfig.base.json tsconfig.json LICENSE ./
 

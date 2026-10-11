@@ -1,4 +1,5 @@
-CREATE TABLE `accounts` (
+-- Adopt databases created before Drizzle migration tracking without recreating existing objects.
+CREATE TABLE IF NOT EXISTS `accounts` (
 	`id` text PRIMARY KEY NOT NULL,
 	`username` text NOT NULL,
 	`nickname` text DEFAULT '' NOT NULL,
@@ -8,15 +9,15 @@ CREATE TABLE `accounts` (
 	`private` integer DEFAULT false NOT NULL,
 	`created_at` integer NOT NULL
 );
-
-CREATE TABLE `admins` (
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `admins` (
 	`id` integer PRIMARY KEY NOT NULL,
 	`username` text NOT NULL,
 	`password_hash` text NOT NULL
 );
-
-CREATE UNIQUE INDEX `admins_username_unique` ON `admins` (`username`);
-CREATE TABLE `candidates` (
+--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS `admins_username_unique` ON `admins` (`username`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `candidates` (
 	`id` text PRIMARY KEY NOT NULL,
 	`job_id` text NOT NULL,
 	`title` text NOT NULL,
@@ -26,10 +27,8 @@ CREATE TABLE `candidates` (
 	`created_at` integer NOT NULL,
 	CONSTRAINT "candidates_state_check" CHECK("candidates"."state" IN ('pending', 'confirmed', 'rejected'))
 );
-
-CREATE INDEX `candidates_job_state` ON `candidates` (`job_id`,`state`);
-CREATE INDEX `candidates_state` ON `candidates` (`state`);
-CREATE TABLE `jobs` (
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `jobs` (
 	`id` text PRIMARY KEY NOT NULL,
 	`kind` text NOT NULL,
 	`dedupe_key` text NOT NULL,
@@ -46,11 +45,10 @@ CREATE TABLE `jobs` (
 	`updated_at` integer NOT NULL,
 	CONSTRAINT "jobs_state_check" CHECK("jobs"."state" IN ('pending', 'running', 'succeeded', 'failed', 'cancelled'))
 );
-
-CREATE INDEX `jobs_dedupe_key` ON `jobs` (`dedupe_key`);
-CREATE INDEX `jobs_ready` ON `jobs` (`state`,`available_at`);
-CREATE UNIQUE INDEX `jobs_active_key` ON `jobs` (`dedupe_key`) WHERE "jobs"."state" IN ('pending', 'running');
-CREATE TABLE `mappings` (
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `jobs_ready` ON `jobs` (`state`,`available_at`);--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS `jobs_active_key` ON `jobs` (`dedupe_key`) WHERE "jobs"."state" IN ('pending', 'running');--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `mappings` (
 	`id` text PRIMARY KEY NOT NULL,
 	`title` text NOT NULL,
 	`season` integer NOT NULL,
@@ -59,9 +57,9 @@ CREATE TABLE `mappings` (
 	`resolve_series` integer DEFAULT false NOT NULL,
 	`created_at` integer NOT NULL
 );
-
-CREATE UNIQUE INDEX `mapping_title_season` ON `mappings` (`title`,`season`);
-CREATE TABLE `records` (
+--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS `mapping_title_season` ON `mappings` (`title`,`season`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `records` (
 	`id` text PRIMARY KEY NOT NULL,
 	`job_id` text,
 	`account_id` text,
@@ -78,22 +76,22 @@ CREATE TABLE `records` (
 	`trace` text NOT NULL,
 	`created_at` integer NOT NULL
 );
-
-CREATE INDEX `records_created` ON `records` (`created_at`);
-CREATE TABLE `sessions` (
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS `records_created` ON `records` (`created_at`);--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `sessions` (
 	`token_hash` text PRIMARY KEY NOT NULL,
 	`admin_id` integer NOT NULL,
 	`expires_at` integer NOT NULL,
 	FOREIGN KEY (`admin_id`) REFERENCES `admins`(`id`) ON UPDATE no action ON DELETE cascade
 );
-
-CREATE TABLE `settings` (
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `settings` (
 	`key` text PRIMARY KEY NOT NULL,
 	`value` text NOT NULL,
 	`updated_at` integer NOT NULL
 );
-
-CREATE TABLE `watched` (
+--> statement-breakpoint
+CREATE TABLE IF NOT EXISTS `watched` (
 	`scope` text NOT NULL,
 	`rating_key` text NOT NULL,
 	`account_id` text NOT NULL,
@@ -101,5 +99,5 @@ CREATE TABLE `watched` (
 	`episode_id` integer NOT NULL,
 	`created_at` integer NOT NULL
 );
-
-CREATE UNIQUE INDEX `watched_identity` ON `watched` (`scope`,`rating_key`,`account_id`);
+--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS `watched_identity` ON `watched` (`scope`,`rating_key`,`account_id`);

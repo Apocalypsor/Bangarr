@@ -18,7 +18,8 @@
     "check": "biome check --no-errors-on-unmatched --files-ignore-unknown=true",
     "typecheck": "tsc -p apps/server/tsconfig.json && tsc -p apps/page/tsconfig.json",
     "prepare": "husky",
-    "db:generate": "drizzle-kit export --dialect=sqlite --schema=./apps/server/src/db/schema.ts > apps/server/src/db/schema.sql"
+    "db:generate": "drizzle-kit generate",
+    "db:check": "drizzle-kit check"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.15",
