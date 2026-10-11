@@ -769,6 +769,44 @@ test("one account failing never confirms its watched state or repeats the other 
   ).toHaveLength(1);
 });
 
+test("successful retries close only their own stale matching candidates", async () => {
+  const { runner, database } = await fixture(true);
+  JobsService.enqueue(runner, {
+    kind: "plex-scan",
+    dedupeKey: "scan",
+    payload: {},
+  });
+  for (let i = 0; i < 3; i++) await TaskService.runOne(runner);
+  const pending = database.orm.select().from(candidates).all();
+  expect(pending).toHaveLength(2);
+  MatchingService.save(runner, {
+    title: "番剧",
+    season: 1,
+    subjectId: 10,
+    episodeOffset: 0,
+  });
+  const first = pending[0],
+    second = pending[1];
+  if (!first || !second) throw new Error("Missing candidates");
+  JobsService.retry(runner, first.jobId);
+  await TaskService.runOne(runner);
+  expect(
+    MatchingService.candidates(runner)[0]?.tasks.map((row) => row.jobId),
+  ).toEqual([second.jobId]);
+  expect(
+    database.orm
+      .select()
+      .from(candidates)
+      .all()
+      .find((row) => row.id === first.id)?.state,
+  ).toBe("confirmed");
+  expect(JobsService.get(runner, first.jobId)?.state).toBe("failed");
+  JobsService.retry(runner, second.jobId);
+  await TaskService.runOne(runner);
+  expect(MatchingService.candidates(runner)).toHaveLength(0);
+  expect(database.orm.select().from(candidates).all()).toHaveLength(2);
+});
+
 test("ambiguous match writes nothing until confirmed mapping retries the original task", async () => {
   const { runner, database, settings, writes } = await fixture(true);
 

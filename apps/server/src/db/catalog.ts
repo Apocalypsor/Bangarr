@@ -70,7 +70,7 @@ export class CatalogStore {
     );
   }
 
-  search(names: string[]) {
+  search(names: string[], includeRelated = false) {
     const found = new Map<number, CatalogSubject>();
 
     this.read((db) => {
@@ -91,7 +91,8 @@ export class CatalogStore {
           found.set(subject.id, { ...subject, source: "data" });
         }
 
-        if (exact.length || [...normalized].length < 3) continue;
+        if ((exact.length && !includeRelated) || [...normalized].length < 3)
+          continue;
 
         const chars = [...normalized];
 

@@ -1,5 +1,5 @@
 import type { AppDatabase } from "@server/db/client";
-import { candidates, records, watched } from "@server/db/schema";
+import { candidates, jobs, records, watched } from "@server/db/schema";
 import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
 
 export interface HistoryFilter {
@@ -22,7 +22,7 @@ export const insertWatched = (
 export const saveSyncRecord = (
   database: AppDatabase,
   value: typeof records.$inferInsert,
-) =>
+) => {
   database.orm
     .insert(records)
     .values(value)
@@ -35,6 +35,22 @@ export const saveSyncRecord = (
       },
     })
     .run();
+
+  if (value.status === "success" && value.jobId)
+    database.orm
+      .update(candidates)
+      .set({ state: "confirmed" })
+      .where(
+        and(
+          eq(candidates.state, "pending"),
+          sql`${candidates.jobId} in (
+        select ${jobs.id} from ${jobs}
+        where ${jobs.dedupeKey} = (select ${jobs.dedupeKey} from ${jobs} where ${jobs.id} = ${value.jobId})
+      )`,
+        ),
+      )
+      .run();
+};
 
 export const findPendingJobCandidate = (database: AppDatabase, jobId: string) =>
   database.orm

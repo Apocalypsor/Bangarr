@@ -9,6 +9,7 @@ export interface MatchCandidate {
   date: string;
   score: number;
   source: string;
+  dateMatched?: boolean;
 }
 
 export interface MatchResult {

@@ -31,12 +31,14 @@ import {
   findEpisode,
   isMovie,
   mergeSubject,
+  selectDatedSubject,
   subjectAliases,
 } from "@server/modules/matching/utils/candidates";
 import type { EpisodeSegment } from "@server/modules/matching/utils/episodes";
 import {
   dateDistance,
   findCumulativeEpisode,
+  findDatedEpisode,
   findLocalEpisode,
   findMergedSeasonEpisode,
   groupSeasonSegments,
@@ -123,7 +125,9 @@ export abstract class MatchingService {
     );
 
     const explicit = seasonNumbers(`${first.name} ${first.nameCn}`);
-    const seasonMatched = explicit.size === 1 && explicit.has(item.season);
+    const seasonMatched =
+      first.dateMatched === true ||
+      (explicit.size === 1 && explicit.has(item.season));
 
     const episode = await MatchingService.resolveEpisode(
       context,
@@ -143,7 +147,7 @@ export abstract class MatchingService {
     api: BangumiClient,
     config: Settings,
     trace: Record<string, unknown>[] = [],
-  ) {
+  ): Promise<MatchCandidate> {
     const names = [
       ...new Set(
         [item.title, item.originalTitle]
@@ -155,7 +159,10 @@ export abstract class MatchingService {
     const subjects = new Map<number, BangumiSubject>();
 
     const local = config.bangumi.dataEnabled
-      ? new CatalogStore(context.database.path).search(names)
+      ? new CatalogStore(context.database.path).search(
+          names,
+          Boolean(item.releaseDate),
+        )
       : [];
 
     for (const candidate of local) mergeSubject(subjects, candidate);
@@ -178,7 +185,13 @@ export abstract class MatchingService {
       exact: [...exactIds],
     });
 
-    if (exactIds.size !== 1) {
+    const datedLocalMatch = local.some(
+      (subject) =>
+        exactIds.has(subject.id) &&
+        subject.date &&
+        (dateDistance(subject.date, item.releaseDate) ?? Infinity) <= 180,
+    );
+    if (exactIds.size !== 1 || (item.releaseDate && !datedLocalMatch)) {
       for (const name of names)
         for (const subject of await api.search(name, config.sync.realAction))
           mergeSubject(subjects, subject);
@@ -249,6 +262,31 @@ export abstract class MatchingService {
 
     const exact = scored.filter((row) => row.score === 1);
 
+    const catalogDate = selectDatedSubject(
+      scored,
+      subjects,
+      names,
+      item.releaseDate,
+    );
+    if (catalogDate === null)
+      throw new NeedsConfirmation(scored.slice(0, 10), [
+        ...trace,
+        {
+          step: "date-disambiguation",
+          reason: "多个相关条目的放送日期同样接近，无法唯一确认",
+        },
+      ]);
+
+    if (catalogDate) {
+      trace.push({
+        step: "date-disambiguation",
+        method: catalogDate.method,
+        subjectId: catalogDate.candidate.id,
+        days: catalogDate.days,
+      });
+      return { ...catalogDate.candidate, dateMatched: catalogDate.days <= 180 };
+    }
+
     const dated = (
       exact.length
         ? exact
@@ -289,6 +327,19 @@ export abstract class MatchingService {
     }
 
     if (exact.length === 1) {
+      if (
+        item.releaseDate &&
+        exact[0]?.date &&
+        (dateDistance(exact[0].date, item.releaseDate) ?? 0) > 365
+      )
+        throw new NeedsConfirmation(scored.slice(0, 10), [
+          ...trace,
+          {
+            step: "date-disambiguation",
+            reason:
+              "同名条目的放送日期相差超过一年，未找到日期与名称均相符的候选",
+          },
+        ]);
       trace.push({ step: "unique-exact-title", subjectId: exact[0]?.id });
 
       return exact[0] as MatchCandidate;
@@ -533,9 +584,23 @@ export abstract class MatchingService {
       grouped?.get(item.season) ??
       (exactSeason.length ? orderSegments(exactSeason, successors) : undefined);
 
-    const cumulative = targets
-      ? findCumulativeEpisode(targets, item.episode)
-      : undefined;
+    // Include the selected part as well as its same-season relations: a manual
+    // mapping may enter at either cour. Only use an unambiguous season chain.
+    const nearDate =
+      item.season > 1 && targets
+        ? findDatedEpisode(targets, item.episode, item.releaseDate)
+        : undefined;
+
+    if (nearDate) {
+      trace.push({ step: "episode", method: "chapter-airdate", ...nearDate });
+
+      return { subjectId: nearDate.subjectId, episodeId: nearDate.episodeId };
+    }
+
+    const cumulative =
+      targets && nearDate !== null
+        ? findCumulativeEpisode(targets, item.episode)
+        : undefined;
 
     if (
       cumulative &&
@@ -553,7 +618,7 @@ export abstract class MatchingService {
       item.episode >
         targets.reduce((sum, entry) => sum + entry.episodes.length, 0);
 
-    if (item.season <= 1 || exceedsSeason) {
+    if (nearDate !== null && (item.season <= 1 || exceedsSeason)) {
       const bySort = chain.flatMap((entry) =>
         entry.episodes
           .filter((ep) => ep.sort === item.episode)

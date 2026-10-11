@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { BangumiEpisode } from "@server/clients/bangumi/types";
 import {
   findCumulativeEpisode,
+  findDatedEpisode,
   findLocalEpisode,
   findMergedSeasonEpisode,
 } from "@server/modules/matching/utils/episodes";
@@ -71,6 +72,34 @@ test("same-season fallback counts actual normal chapters including a prologue", 
     subjectId: 2,
     episodeId: 200,
   });
+});
+
+test("chapter airdate resolution follows numbering, a 120-day bound and unique dates", () => {
+  const segment = (id: number, airdate: string) => ({
+    subject: { id, name: "番剧 第二季", name_cn: "", type: 2 },
+    episodes: [
+      { ...episode(id * 100, 8), airdate },
+      { ...episode(id * 100 + 1, 9), airdate: "2024-06-01" },
+    ],
+  });
+  const first = segment(1, "2024-01-01");
+  const second = segment(2, "2024-05-31");
+  // Another chapter has the exact date, but only the requested number competes.
+  expect(findDatedEpisode([first, second], 8, "2024-06-01")).toEqual({
+    subjectId: 2,
+    episodeId: 200,
+    days: 1,
+  });
+  expect(findDatedEpisode([first], 8, "2024-04-30")?.days).toBe(120);
+  expect(findDatedEpisode([first], 8, "2024-05-01")).toBeUndefined();
+  expect(
+    findDatedEpisode([second, segment(3, "2024-06-02")], 8, "2024-06-01"),
+  ).toBeNull();
+  expect(findDatedEpisode([second], 0, "2024-05-31")).toBeUndefined();
+  expect(findDatedEpisode([second], 3, "2024-05-31")).toBeUndefined();
+  expect(findDatedEpisode([second], 8, "invalid")).toBeUndefined();
+  expect(findDatedEpisode([second], 8, "")).toBeUndefined();
+  expect(findDatedEpisode([segment(3, "")], 8, "2024-06-01")).toBeUndefined();
 });
 
 test("a merged season starting at zero stays in that season", () => {

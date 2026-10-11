@@ -10,6 +10,7 @@ import { accounts, candidates, jobs } from "@server/db/schema";
 import { JobsService } from "@server/modules/jobs/service";
 import { NeedsConfirmation } from "@server/modules/matching/errors";
 import mushokuSeasonTwo from "@server/modules/matching/fixtures/mushoku-season-two.json";
+import splitCourTitles from "@server/modules/matching/fixtures/split-cour-title-candidates.json";
 import { MatchingService } from "@server/modules/matching/service";
 import { defaultSettings } from "@server/modules/settings/model";
 import { SettingsService } from "@server/modules/settings/service";
@@ -93,6 +94,169 @@ test("date disambiguation ignores weak title candidates and equal scores never b
     ),
   ).rejects.toBeInstanceOf(NeedsConfirmation);
 });
+
+test.each([
+  ["无职转生～到了异世界就拿出真本事～", 1, 14, "2021-10-17", 325585],
+  ["无职转生～到了异世界就拿出真本事～", 1, 23, "2021-12-19", 325585],
+  ["无职转生～到了异世界就拿出真本事～", 2, 13, "2024-04-07", 444557],
+  ["无职转生～到了异世界就拿出真本事～", 2, 24, "2024-06-30", 444557],
+  ["炎炎消防队", 3, 13, "2026-01-09", 502876],
+  ["炎炎消防队", 3, 25, "2026-03-27", 502876],
+] as const)(
+  "catalog selection resolves split parts from the original Plex title: %s S%sE%s",
+  async (title, season, episode, releaseDate, subjectId) => {
+    const context = testContext();
+    disposables.push(context.dispose);
+    const catalog = createCatalog(
+      new CatalogStore(context.database.path).path(),
+    );
+    for (const subject of splitCourTitles)
+      insertSubject(catalog, { ...subject, source: "data" });
+    catalog.close();
+    // Deliberately return no online results: the local index must also expand beyond exact aliases.
+    const api = new BangumiClient(
+      "https://offline.invalid",
+      "",
+      async (request) => {
+        expect(new URL(request.url).pathname).toBe("/v0/search/subjects");
+        return Response.json({ data: [], total: 0 });
+      },
+    );
+    const trace: Record<string, unknown>[] = [];
+    const selected = await MatchingService.selectSubject(
+      context,
+      {
+        ratingKey: "case",
+        title,
+        originalTitle: "",
+        season,
+        episode,
+        releaseDate,
+        mediaType: "episode",
+        viewCount: 1,
+        lastViewedAt: null,
+      },
+      api,
+      defaultSettings,
+      trace,
+    );
+    expect(selected.id).toBe(subjectId);
+    expect(trace.at(-1)).toMatchObject({ step: "date-disambiguation" });
+  },
+);
+
+test("equally dated partial titles cannot fall back to an older exact title", async () => {
+  const context = testContext();
+  disposables.push(context.dispose);
+  const api = new BangumiClient("https://offline.invalid", "", async () =>
+    Response.json({
+      data: [
+        { id: 1, name: "My Anime", name_cn: "", type: 2, date: "2023-06-01" },
+        {
+          id: 2,
+          name: "My Anime Part 2",
+          name_cn: "",
+          type: 2,
+          date: "2024-01-01",
+        },
+        {
+          id: 3,
+          name: "My Anime Part 3",
+          name_cn: "",
+          type: 2,
+          date: "2024-01-01",
+        },
+      ],
+      total: 3,
+    }),
+  );
+
+  await expect(
+    MatchingService.selectSubject(
+      context,
+      {
+        ratingKey: "ambiguous",
+        title: "My Anime",
+        originalTitle: "",
+        season: 2,
+        episode: 1,
+        releaseDate: "2024-01-08",
+        mediaType: "episode",
+        viewCount: 1,
+        lastViewedAt: null,
+      },
+      api,
+      defaultSettings,
+    ),
+  ).rejects.toBeInstanceOf(NeedsConfirmation);
+});
+
+test.each([true, false])(
+  "a single stale exact title cannot prevent discovering the second cour (catalog enabled: %s)",
+  async (dataEnabled) => {
+    const context = testContext();
+    disposables.push(context.dispose);
+    const catalog = createCatalog(
+      new CatalogStore(context.database.path).path(),
+    );
+    const exact = splitCourTitles.find((row) => row.id === 277554);
+    if (!exact) throw new Error("Missing fixture");
+    insertSubject(catalog, { ...exact, source: "data" });
+    catalog.close();
+    const calls: string[] = [];
+    const api = new BangumiClient(
+      "https://offline.invalid",
+      "",
+      async (request) => {
+        const url = new URL(request.url);
+        calls.push(url.pathname);
+        if (url.pathname === "/v0/search/subjects")
+          return Response.json({
+            data: splitCourTitles,
+            total: splitCourTitles.length,
+          });
+        if (url.pathname === "/v0/episodes") {
+          expect(url.searchParams.get("subject_id")).toBe("444557");
+          const episodes =
+            mushokuSeasonTwo.find((row) => row.subject.id === 444557)
+              ?.episodes ?? [];
+          return Response.json({ data: episodes, total: episodes.length });
+        }
+        throw new Error(`Unexpected request ${url.pathname}`);
+      },
+    );
+    const config = structuredClone(defaultSettings);
+    config.bangumi.dataEnabled = dataEnabled;
+    for (const episode of [13, 17, 18, 19, 20, 21, 24]) {
+      const expected = mushokuSeasonTwo[1]?.episodes.find(
+        (row) => row.sort === episode,
+      );
+      if (!expected) throw new Error("Missing fixture episode");
+      const result = await MatchingService.match(
+        context,
+        {
+          ratingKey: String(episode),
+          title: exact.name_cn,
+          originalTitle: "",
+          season: 2,
+          episode,
+          releaseDate: expected.airdate,
+          mediaType: "episode",
+          viewCount: 1,
+          lastViewedAt: null,
+        },
+        api,
+        config,
+      );
+      expect(result).toMatchObject({
+        subjectId: 444557,
+        episodeId: expected.id,
+        mapped: false,
+      });
+    }
+    expect(calls).toContain("/v0/search/subjects");
+  },
+);
 
 const fixture = (
   segments: Segment[],
@@ -662,6 +826,42 @@ test.each([373247, 444557])(
         defaultSettings,
       ),
     ).rejects.toBeInstanceOf(NeedsConfirmation);
+
+    // Confirm through the same path as the UI, then reuse the saved mapping
+    // on fresh matches. Plex and Bangumi can disagree by a day at a cour boundary.
+    seedCandidate(context, {
+      id: "cour-boundary",
+      title: item.title,
+      season: 2,
+      episode: 13,
+      accountId: "a",
+    });
+    MatchingService.resolve(context, "cour-boundary", entryId);
+    expect(MatchingService.candidates(context)).toHaveLength(0);
+    for (const sort of [13, 14, 17, 24]) {
+      const expected = mushokuSeasonTwo
+        .find((row) => row.subject.id === 444557)
+        ?.episodes.find((row) => row.sort === sort);
+      if (!expected) throw new Error(`Missing fixture episode ${sort}`);
+      for (const shift of [-1, 1]) {
+        const releaseDate = new Date(
+          Date.parse(expected.airdate) + shift * 86400000,
+        )
+          .toISOString()
+          .slice(0, 10);
+        const result = await MatchingService.match(
+          { database: context.database },
+          { ...item, episode: sort, releaseDate },
+          api,
+          defaultSettings,
+        );
+        expect(result).toMatchObject({
+          subjectId: 444557,
+          episodeId: expected.id,
+          mapped: true,
+        });
+      }
+    }
   },
 );
 
@@ -761,6 +961,35 @@ test("explicit special-episode offsets still resolve the selected chapter", asyn
       defaultSettings,
     ),
   ).toMatchObject({ subjectId: 325585, episodeId: 1066854 });
+});
+
+test("equally close chapter dates cannot fall back to a cumulative guess", async () => {
+  const { resolve } = fixture([
+    { id: 1, name: "番剧 第二季", count: 7, airdate: "2024-05-31" },
+    { id: 2, name: "番剧 第二季 第2部分", count: 5, airdate: "2024-06-02" },
+  ]);
+
+  await expect(resolve(2, 1, 1, "2024-06-01")).rejects.toBeInstanceOf(
+    NeedsConfirmation,
+  );
+});
+
+test("nearby chapter dates do not bypass ambiguous sequel branches", async () => {
+  const { resolve } = fixture(
+    [
+      { id: 1, name: "番剧 第二季", airdate: "2023-01-01" },
+      { id: 2, name: "番剧 第二季 第2部分", airdate: "2024-05-31" },
+      { id: 3, name: "番剧 第二季 第2部分", airdate: "2024-04-01" },
+    ],
+    [
+      [1, 2],
+      [1, 3],
+    ],
+  );
+
+  await expect(resolve(2, 1, 1, "2024-06-01")).rejects.toBeInstanceOf(
+    NeedsConfirmation,
+  );
 });
 
 test("manual mappings fall back across reset-numbered cours and keep ambiguous branches pending", async () => {

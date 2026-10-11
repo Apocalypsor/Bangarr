@@ -112,6 +112,33 @@ export const findCumulativeEpisode = (
   return undefined;
 };
 
+/** Reference airdate resolution compares matching chapter numbers within 120 days. */
+export const findDatedEpisode = (
+  segments: EpisodeSegment[],
+  target: number,
+  releaseDate: string,
+) => {
+  if (target <= 0 || !releaseDate) return undefined;
+
+  const candidates = segments
+    .flatMap((segment) => {
+      const episode = findLocalEpisode(segment.episodes, target);
+      const days = episode?.airdate
+        ? dateDistance(episode.airdate, releaseDate)
+        : null;
+
+      return episode && days !== null && days <= 120
+        ? [{ subjectId: segment.subject.id, episodeId: episode.id, days }]
+        : [];
+    })
+    .sort((a, b) => a.days - b.days);
+  const [first, second] = candidates;
+
+  // Null denotes ambiguity, so callers must not fall back to cumulative numbering.
+  // Unlike the reference's newest-sequel tie break, keep these matches pending.
+  return first && first.days === second?.days ? null : first;
+};
+
 const isContinuationTitle = (title: string) =>
   /(?:part|cour)\s*(?:[2-9]|ii|iii|iv)\b|第\s*[2-9二三四五六七八九]\s*(?:部分|クール)|後半|后半|後篇|后篇/i.test(
     title.normalize("NFKC"),
