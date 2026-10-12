@@ -30,8 +30,8 @@ jobs:
           bun db:generate
           git diff --exit-code -- apps/server/src/db/schema.sql
 
+      - run: bun lint
       - run: bun check
-      - run: bun typecheck
       - run: bun test
       - run: bun run build
 

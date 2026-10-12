@@ -1,6 +1,6 @@
 # Bangarr — Agent Guide
 
-Commit only when explicitly asked. Use Conventional Commits. Before committing, run `bun check`, `bun typecheck`, `bun test`, and `bun run build` from the repository root. Do not add `biome-ignore` directives.
+Commit only when explicitly asked. Use Conventional Commits. Before committing, run `bun lint`, `bun check`, `bun test`, and `bun run build` from the repository root. Do not add `biome-ignore` directives.
 
 ## Scope and workflow
 

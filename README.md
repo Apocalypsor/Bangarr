@@ -29,6 +29,8 @@ docker compose up -d
 
 ## 开发
 
+使用 Bun 1.4.3 或更新版本，CI 使用 `package.json` 中指定的版本。
+
 ```sh
 bun install --frozen-lockfile
 bun dev
@@ -37,11 +39,13 @@ bun dev
 访问 `http://127.0.0.1:5173`。Vite 代理 `/api` 到本地 Elysia；`bun start` 仅启动后端。修改数据库定义后运行 `bun db:generate` 更新初始化 SQL。
 
 ```sh
+bun lint
 bun check
-bun typecheck
 bun test
 bun run build
 ```
+
+`bun lint` 运行 Biome 格式和代码检查；`bun check` 使用 [Bun 原生类型检查](https://bun.com/docs/runtime/check)，通过根目录 `tsconfig.json` 的项目引用检查前后端。`bun typecheck` 是 `bun check` 的别名。
 
 ## 许可
 

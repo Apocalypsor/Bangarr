@@ -1,2 +1,2 @@
-bun typecheck
+bun check
 bun lint-staged

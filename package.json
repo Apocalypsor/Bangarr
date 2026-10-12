@@ -4,7 +4,7 @@
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
-  "packageManager": "bun@1.4.2",
+  "packageManager": "bun@1.4.3",
   "workspaces": [
     "apps/server",
     "apps/page"
@@ -15,8 +15,8 @@
     "dev:page": "bun --cwd apps/page dev",
     "build": "bun --cwd apps/page build",
     "start": "bun apps/server/src/index.ts",
-    "check": "biome check --no-errors-on-unmatched --files-ignore-unknown=true",
-    "typecheck": "tsc -p apps/server/tsconfig.json && tsc -p apps/page/tsconfig.json",
+    "lint": "biome check --no-errors-on-unmatched --files-ignore-unknown=true",
+    "typecheck": "bun check",
     "prepare": "husky",
     "db:generate": "drizzle-kit generate",
     "db:check": "drizzle-kit check"
@@ -26,8 +26,7 @@
     "@types/bun": "1.4.2",
     "drizzle-kit": "0.31.11",
     "husky": "^9.1.7",
-    "lint-staged": "^17.3.0",
-    "typescript": "^7.0.2"
+    "lint-staged": "^17.3.0"
   },
   "lint-staged": {
     "*": [
